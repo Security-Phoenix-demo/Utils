@@ -1,0 +1,56 @@
+AllAccessAccounts:
+- fc+jpmc@phoenix.security
+Environment Groups:
+- Name: Production
+  Type: CLOUD
+  Status: Production
+  Tier: 5
+  Responsable: fc+jpmc@phoenix.security
+  TeamName: reporting-platform
+  Services:
+  - Service: PHX_GKE_Cluster_auto
+    Type: cloud
+    Tier: 1
+    Deployment_set: SPHX_Deployment
+    #Ticketing:
+    #- TInteegrationName: IAS-Jira
+    #  Backlog: abinitio
+    #Messaging:
+    #- MInteegrationName: IAS-Slack
+    #  Channel: abinitio
+    MultiConditionRules:
+      - AssetType: CONTAINER #Look up possible values in the documentation
+        SearchName: registry.securityphoenix.com/webapp_front
+      - AssetType: CONTAINER
+        SearchName: JPMCTEST.wpay.com/POC1_CD_wpay_app_frontend #add cloud tags
+
+DeploymentGroups:
+- AppName: SPHX_Deployment_AUTO
+  Status: Prod
+  Deployment_set: SPHX_Deployment
+  ReleaseDefinitions: []
+  Responsable: fc+jpmc@phoenix.security
+  Tier: 5
+  Components:
+  - ComponentName: SPHX_Frontend_Auto
+    Status: Production
+    Type: Release
+    TeamNames:
+    - SPHX_Full_Stack
+    - SPHX_App
+    MultiConditionRules:
+    - AssetType: Repository #Look up possible values in the documentation
+      SearchName: NWCD_V3_NEW_repo_DEDUP.demo/JPMC-testdev_frontend
+    - AssetType: Repository
+      SearchName: NWCD_V3_NEW_repo_DEDUP/JPMC-testdev_frontend #add cloud tags
+  - ComponentName: SPHX_Backend_Auto
+    Status: Production
+    Type: Release
+    TeamNames:
+    - SPHX_Full_Stack
+    - SPHX_App
+    MultiConditionRules:
+    - AssetType: Repository #Look up possible values in the documentation
+      SearchName: NWCD_V3_NEW_repo_DEDUP.demo/JPMC-testdev_backend
+    - AssetType: Repository
+      SearchName: NWCD_V3_NEW_repo_DEDUP/JPMC-testdev_backend #add cloud tags

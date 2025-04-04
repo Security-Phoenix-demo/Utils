@@ -1,0 +1,42 @@
+name: Phoenix Security Policy Gate
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      application_override:
+        description: 'Override application name from core-structure'
+        required: false
+      component_override:
+        description: 'Override component name from core-structure'
+        required: false
+
+jobs:
+  policy-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests termcolor colorama pyyaml
+
+      - name: Run Phoenix Policy Gate
+        run: python .github/actions/phoenix-policy-gate/phoenix_policy_gate_action.py
+        env:
+          PHOENIX_CLIENT_ID: ${{ secrets.PHOENIX_CLIENT_ID }}
+          PHOENIX_CLIENT_SECRET: ${{ secrets.PHOENIX_CLIENT_SECRET }}
+          PHOENIX_API_URL: ${{ secrets.PHOENIX_API_URL || 'https://api.poc1.appsecphx.io' }}
+          APPLICATION_OVERRIDE: ${{ github.event.inputs.application_override }}
+          COMPONENT_OVERRIDE: ${{ github.event.inputs.component_override }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 

@@ -1,0 +1,29 @@
+DeploymentGroups:
+- AppName: SPHX_Deployment_AUTO
+  Status: Prod
+  Deployment_set: SPHX_Deployment
+  Responsable: fc+jpmc@phoenix.security
+  Tier: 5
+  Components:
+  - ComponentName: SPHX_Frontend_Auto
+    Status: Production
+    Type: Release
+    TeamNames:
+    - SPHX_Full_Stack
+    - SPHX_App
+    MultiConditionRules:
+    - AssetType: Repository
+      SearchName: NWCD_V3_NEW_repo_DEDUP.demo/JPMC-testdev_frontend
+    - AssetType: Repository
+      SearchName: NWCD_V3_NEW_repo_DEDUP/JPMC-testdev_frontend
+  - ComponentName: SPHX_Backend_Auto
+    Status: Production
+    Type: Release
+    TeamNames:
+    - SPHX_Full_Stack
+    - SPHX_App
+    MultiConditionRules:
+    - AssetType: Repository
+      SearchName: NWCD_V3_NEW_repo_DEDUP.demo/JPMC-testdev_backend
+    - AssetType: Repository
+      SearchName: NWCD_V3_NEW_repo_DEDUP/JPMC-testdev_backend 

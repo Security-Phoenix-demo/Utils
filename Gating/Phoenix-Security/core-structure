@@ -1,0 +1,9 @@
+application: my-demo-app
+component: frontend-service
+
+# This file is used by the Phoenix Security Policy Gate GitHub Action
+# to determine which application and component to check against.
+#
+# Format:
+# application: <application-name> (required)
+# component: <component-name> (optional, if omitted, will check the application level) 
