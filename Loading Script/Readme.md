@@ -144,8 +144,9 @@ The script includes error handling for:
 
 ## License
 
-[Specify your license here]
+
+You can fork this file and modify it at will, mention the author and always refer back to the code 
 
 ## Contributing
 
-[Specify contribution guidelines here]
+You can provide your contribution and pull request that will be reviewed by Phoenix security engineering team
