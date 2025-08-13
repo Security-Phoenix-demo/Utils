@@ -224,8 +224,8 @@ def send_results(file_path, scan_type, assessment_name, import_type, client_id, 
 #client_id = os.environ["CLIENT_ID"]
 #client_secret = os.environ["CLIENT_SECRET"]
 
-#client_id = "338d5204-7c60-41e5-9af4-6b05d1e2d6f3"
-#client_secret = "pat1_49b083aded974ce5b4bd4fbe9e4a3b08ba46274b105b482eb57994f5580453d6"
+#client_id = "******"
+#client_secret = "pat1_******"
 
 # Use the parameters defined at the top of the file
 request_id, final_status = send_results(
