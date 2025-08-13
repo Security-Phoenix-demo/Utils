@@ -14,11 +14,11 @@ API_BASE_URL = "https://api.demo.appsecphx.io"
 # API_BASE_URL =   #url = " https://api.poc1.appsecphx.io"
 
 # Import parameters
-FILE_PATH = 'owasp-benchmarkjava.json'
-SCAN_TYPE = 'SonarQube Scan'
-ASSESSMENT_NAME = 'OWASP Benchmark_VLV'
+FILE_PATH = 'owasp-benchmarkjava.json' #path of the file
+SCAN_TYPE = 'SonarQube Scan' #name of the scanner
+ASSESSMENT_NAME = 'ASSESSMENT_123' #change this in your assessment name eg sonarqube
 IMPORT_TYPE = 'new'
-SCAN_TARGET = 'owasp.benchmark.volvo.com'
+SCAN_TARGET = 'ASSESSMENT_123' #name of the asset source or name of the project
 AUTO_IMPORT = True
 WAIT_FOR_COMPLETION = True
 
