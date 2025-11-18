@@ -1,0 +1,10 @@
+a_id,a_subtype,at_ip,at_fqdn,a_tags,v_name,v_description,v_remedy,v_severity,v_location,v_cve,v_cwe,v_published_datetime,v_tags,v_details
+### The lines below are comments and examples. Please remove before adding your asset and vulnerability data.,,,,,,,,,,,,,
+"### Use one line for each vulnerability, and repeat the asset information as required.",,,,,,,,,,,,,
+"### ""a_id"" is Phoenix Security's asset ID. If you use this ID none of the other asset columns are required and they will be ignored.",,,,,,,,,,,,,
+"### ""v_details"" is a custom JSON text with attributes for the vuln. It will not be processed in any specific way - it will be displayed in vulns details area.",,,,,,,,,,,,,
+"### Info about each column. See note about ""a_id"" above.",required (or FQDN),required (or IP),optional,required,required,required,1 - 10 (required),File/resource path (required),optional,optional,optional (defaults to Now),,optional
+"### ""a_tags"" & ""v_tags"" are optional - JSON array of strings or objects (see examples)",,,,,,,,,,,,,
+,,1.2.3.4,,"[""tag1"", ""tag2""]",First vulnerability,This is the vuln description,Descriptions of remedial actions,5,/home/page.html,CVE-100,CWE-50,15-09-2021 15:15:15,,"{""misc"":""test""}"
+,,,https://example.com,"[""tag1"", ""tag2""]",Second vulnerability,This is the vuln description,Descriptions of remedial actions,6,/scripts/module.js,CVE-101,CWE-51,,,"{""misc"":""test""}"
+d2d5d2ca-82ac-11ed-91ba-3b7eb8896770,,,,"[{""key"":""dep"", ""value"":""finance""}, {""key"":""team"", ""value"":""ops""}]",First vulnerability,This is the vuln description,Descriptions of remedial actions,5,/home/page.html,CVE-100,CWE-50,15-09-2021 15:15:15,,"{""misc"":""test""}"
