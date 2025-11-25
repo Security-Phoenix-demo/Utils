@@ -274,7 +274,13 @@ class EnhancedMultiScannerImportManager:
             )
             
             # Additional Format Handlers
-            from format_handlers import ChefInspecTranslator
+            try:
+                from scanner_translators import ChefInspecTranslator
+                chef_inspec_available = True
+            except ImportError:
+                logger.warning("⚠️ ChefInspecTranslator not available - skipping")
+                ChefInspecTranslator = None
+                chef_inspec_available = False
             
             # Add scanner config for Grype, Trivy, JFrog, BlackDuck, Prowler, Tier1, Tier2, Tier3, SARIF, Format Handlers, and Universal
             from phoenix_multi_scanner_import import ScannerConfig
@@ -402,9 +408,6 @@ class EnhancedMultiScannerImportManager:
                 MSDefenderTranslator(self.scanner_configs.get('ms_defender', {}), tag_config),       # 🆕
                 DSOPTranslator(self.scanner_configs.get('dsop', {}), tag_config),                    # 🆕 (duplicate for flexibility)
                 
-                # ADDITIONAL FORMAT HANDLERS
-                ChefInspecTranslator(self.scanner_configs.get('chefinspect', {}), tag_config),
-                
                 # UNIVERSAL YAML FALLBACK - scanner_field_mappings.yaml (200+ scanner types)
                 ConfigurableScannerTranslator(
                     self.scanner_configs.get('universal', {}), 
@@ -413,6 +416,10 @@ class EnhancedMultiScannerImportManager:
                     self.create_inventory_assets
                 ),
             ]
+            
+            # Add ChefInspecTranslator if available
+            if chef_inspec_available and ChefInspecTranslator is not None:
+                self.translators.insert(-1, ChefInspecTranslator(self.scanner_configs.get('chefinspect', {}), tag_config))
             
             self._translators_initialized = True
             logger.info(f"✅ Initialized {len(self.translators)} translators v3.0.0 (MIGRATION COMPLETE: 12 major consolidations | Container[5] + Build[11] + Cloud[5] + Code/Secret[8] + Web[6] + Infrastructure[5] + Format Handlers[2] | 76+ → 42 translators + YAML fallback)")
@@ -593,12 +600,31 @@ class EnhancedMultiScannerImportManager:
             # Step 3: Parse file to assets (pass translator object directly)
             assets = self._parse_file_to_assets(processed_file_path, translator, asset_type)
             
+            # OPTION 3: Lenient parsing with fallback asset creation
             if not assets:
-                return {
-                    'success': False,
-                    'error': 'No assets parsed from file',
-                    'file_path': file_path
-                }
+                logger.warning(f"⚠️ No assets parsed from file, enabling fallback asset creation")
+                
+                # Enable inventory asset creation for fallback
+                if not create_inventory_assets:
+                    logger.info("🔄 Automatically enabling create_inventory_assets for fallback")
+                    create_inventory_assets = True
+                
+                # Create fallback placeholder asset
+                assets = self._create_fallback_asset(
+                    file_path=file_path,
+                    scanner_type=detected_scanner if 'detected_scanner' in locals() else scanner_type,
+                    asset_type=asset_type
+                )
+                
+                if not assets:
+                    # Even fallback failed - this is a real error
+                    return {
+                        'success': False,
+                        'error': 'No assets parsed from file and fallback asset creation failed',
+                        'file_path': file_path
+                    }
+                
+                logger.info(f"✅ Created {len(assets)} fallback inventory asset(s) for tracking")
             
             logger.info(f"📋 Parsed {len(assets)} assets with {sum(len(a.findings) for a in assets)} vulnerabilities")
             
@@ -675,6 +701,75 @@ class EnhancedMultiScannerImportManager:
         else:
             logger.warning(f"⚠️ Fixed file not created, using original: {file_path}")
             return file_path
+    
+    def _create_fallback_asset(self, file_path: str, scanner_type: Optional[str], 
+                               asset_type: Optional[str]) -> List:
+        """Create a fallback inventory asset when parsing fails
+        
+        This implements Option 3: Lenient parsing with fallback asset creation.
+        Creates a placeholder asset with zero risk for inventory/tracking purposes.
+        
+        Args:
+            file_path: Path to the file being processed
+            scanner_type: Scanner type name
+            asset_type: Asset type (INFRA, WEB, etc.)
+            
+        Returns:
+            List containing a single placeholder asset
+        """
+        try:
+            from phoenix_import_refactored import AssetData
+            from pathlib import Path
+            
+            logger.info("🏗️ Creating fallback inventory asset...")
+            
+            # Extract filename for asset naming
+            filename = Path(file_path).name
+            scanner_name = scanner_type or "unknown"
+            
+            # Determine asset type
+            if not asset_type:
+                # Try to infer from scanner type
+                scanner_lower = scanner_name.lower()
+                if any(x in scanner_lower for x in ['qualys', 'tenable', 'nessus']):
+                    asset_type = 'INFRA'
+                elif any(x in scanner_lower for x in ['trivy', 'grype', 'aqua']):
+                    asset_type = 'CONTAINER'
+                elif any(x in scanner_lower for x in ['burp', 'acunetix', 'zap']):
+                    asset_type = 'WEB'
+                elif any(x in scanner_lower for x in ['prowler', 'aws', 'azure', 'scout']):
+                    asset_type = 'CLOUD'
+                elif any(x in scanner_lower for x in ['checkmarx', 'sonar', 'fortify']):
+                    asset_type = 'CODE'
+                else:
+                    asset_type = 'INFRA'  # Default fallback
+            
+            # Create placeholder asset using AssetData dataclass
+            asset = AssetData(
+                asset_type=asset_type,
+                attributes={
+                    'name': f"INVENTORY-{scanner_name}-{filename}",
+                    'ip': f"parser-fallback-{scanner_name}",
+                },
+                tags=[
+                    {'key': 'purpose', 'value': 'inventory-only'},
+                    {'key': 'source', 'value': 'parser-fallback'},
+                    {'key': 'scanner', 'value': scanner_name}
+                ],
+                findings=[]  # No findings - inventory only
+            )
+            
+            logger.info(f"✅ Created fallback inventory asset: {asset.attributes['name']}")
+            logger.info(f"   Type: {asset_type}")
+            logger.info(f"   Purpose: Inventory tracking (no vulnerabilities)")
+            
+            return [asset]
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to create fallback asset: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return []
     
     def _parse_file_to_assets(self, file_path: str, translator_or_name, asset_type: Optional[str]):
         """Parse file to assets using appropriate translator
