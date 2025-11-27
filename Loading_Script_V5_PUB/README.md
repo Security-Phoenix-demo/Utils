@@ -428,6 +428,8 @@ python3 phoenix_multi_scanner_enhanced.py \
 
 ## Import Types Explained
 
+> 📖 **For detailed batching mechanism and import type handling, see [BATCHING_AND_IMPORT_TYPES.md](BATCHING_AND_IMPORT_TYPES.md)**
+
 Phoenix Security supports **three import modes** that determine how new scan data interacts with existing assessment data.
 
 ### 🔵 Import Type: `"new"` (Default)
@@ -701,6 +703,12 @@ auto_import = true                # Auto-import after parsing
 wait_for_completion = true        # Wait for Phoenix to process
 timeout = 3600                    # Max wait time (seconds)
 batch_delay = 10                  # Delay between batches (seconds)
+
+[batch_processing]
+# Batching Configuration
+enable_batching = true            # Enable intelligent batching (true/false)
+max_batch_size = 500              # Max items per batch (reduce for large datasets)
+max_payload_mb = 25.0             # Max payload size in MB
 ```
 
 ### Scanner Mappings: `scanner_field_mappings.yaml`
@@ -1070,6 +1078,8 @@ CI/CD build outputs
 ```bash
 --enable-batching       # Enable intelligent batching for large payloads (DEFAULT)
                         # Automatically splits large imports into batches
+                        # Can be configured in config file [batch_processing] section
+                        # Command-line overrides config file setting
                         
 --disable-batching      # Disable batching and use single requests
                         # Use for small imports or troubleshooting
@@ -1080,10 +1090,14 @@ CI/CD build outputs
 --no-fix-data           # Disable automatic data fixing
                         # Use if you want to see raw data issues
 
---max-batch-size <n>    # Maximum items per batch (default: 500)
-                        # Lower if experiencing timeouts
+--max-batch-size <n>    # Maximum items per batch
+                        # Default: From config file or 500 if not specified
+                        # Command-line overrides config file setting
+                        # Lower if experiencing HTTP 413 errors or timeouts
                         
---max-payload-mb <n>    # Maximum payload size in MB (default: 25.0)
+--max-payload-mb <n>    # Maximum payload size in MB
+                        # Default: From config file or 25.0 if not specified
+                        # Command-line overrides config file setting
                         # Adjust based on network/API limits
 ```
 
@@ -1163,6 +1177,10 @@ python3 phoenix_multi_scanner_enhanced.py
 ---
 
 ## Architecture
+
+> 📖 **Related Documentation:**
+> - **Module Relationships & Data Flow:** [ARCHITECTURE_FLOW.md](ARCHITECTURE_FLOW.md)
+> - **Batching & Import Types:** [BATCHING_AND_IMPORT_TYPES.md](BATCHING_AND_IMPORT_TYPES.md)
 
 ### System Overview (v5.0 - Modular Architecture)
 
@@ -1393,6 +1411,83 @@ The tool uses a **hybrid translation system** combining:
    - Handles ~140 additional scanner types via YAML mappings
    - No code changes needed to add new scanners
 
+### How Translator Selection Works (Simple Explanation)
+
+The system uses a **"Try hardcoded first, then fallback to YAML"** strategy:
+
+#### 1. **42 Hardcoded Translators** (Priority - Used First)
+
+These are **specialized, hand-written translators** for the most common/complex scanners. They are organized by category and tried **in order**, getting **first priority**:
+
+**Container Scanners (5):**
+- Grype, Trivy, Aqua, Sysdig, Trivy Operator
+
+**Build/SCA Scanners (11):**
+- npm audit, pip-audit, CycloneDX, Dependency-Check, Snyk CLI, NSP, Snyk Issues API, ORT, Veracode SCA, JFrog XRay (5→1 consolidated), BlackDuck (7→1 consolidated), DSOP
+
+**Cloud Scanners (5):**
+- Prowler (4→1 consolidated: v2/v3/v4/v5), AWS Inspector, Azure Security Center, Wiz (2→1 consolidated), Scout Suite
+
+**Code/Secret Scanners (8):**
+- SonarQube (2→1 consolidated), GitLab Secret Detection, GitHub Secret Scanning, NoseyParker, SARIF, Checkmarx (2→1 consolidated), TruffleHog (2→1 consolidated), Fortify, Kiuwan
+
+**Web Scanners (6):**
+- TestSSL, Contrast, Burp Suite (3→1 consolidated), MicroFocus WebInspect, HackerOne, BugCrowd, Solar appScreener
+
+**Infrastructure Scanners (5):**
+- Qualys (4→1 consolidated), Tenable/Nessus (2→1 consolidated), Kubeaudit, MS Defender, DSOP
+
+**Format Handlers (1):**
+- Chef InSpec
+
+#### 2. **Universal YAML Translator** (Fallback)
+
+For **any scanner NOT in the 42 hardcoded list**, the system uses:
+- `scanner_field_mappings.yaml` - Configuration file with 200+ scanner definitions
+- `scanner_field_mapper.py` - Universal translation engine
+- `ConfigurableScannerTranslator` - Fallback translator class
+
+**Supports 160+ additional scanners** including custom/new scanners without code changes.
+
+#### 3. **Detection Logic** (How It Chooses)
+
+```python
+# Simplified detection flow:
+for translator in self.translators:  # All 42 hardcoded + 1 YAML translator
+    if translator.can_handle(file_path):
+        return translator  # FIRST match wins!
+```
+
+**Priority order:**
+1. **First 42 translators** = Hardcoded (specialized for specific scanners)
+2. **Last translator** = Universal YAML (catches everything else)
+3. **First match wins** = Once a translator says "I can handle this!", it's used
+
+#### Why This Design?
+
+| Aspect | Hardcoded Translators | YAML Translator |
+|--------|----------------------|-----------------|
+| **Speed** | ⚡ Fast & optimized | ✅ Good performance |
+| **Reliability** | 🛡️ Battle-tested | ✅ Configurable |
+| **Flexibility** | ❌ Requires code changes | ✅ Edit YAML only |
+| **Complexity** | ✅ Handles complex formats | ⚠️ Best for standard formats |
+| **Use Case** | Popular/complex scanners | New/rare/custom scanners |
+
+**Think of it like a restaurant menu:**
+- **Hardcoded = Chef's Specials** (42 popular dishes, pre-made recipes, fastest service)
+- **YAML = Custom Orders** (200+ ingredients, you define the recipe, flexible but slower)
+
+**Real-world example:**
+```bash
+# Trivy scan (popular scanner)
+python3 phoenix_multi_scanner_enhanced.py --file trivy-scan.json
+# → Uses hardcoded TrivyTranslator (fast, specialized)
+
+# Acunetix scan (less common)
+python3 phoenix_multi_scanner_enhanced.py --file acunetix-scan.xml
+# → Uses YAML ConfigurableScannerTranslator (flexible, YAML-defined)
+```
+
 ### Data Flow
 
 1. **Input:** Scanner file (any of 205 types)
@@ -1478,17 +1573,37 @@ python3 phoenix_multi_scanner_enhanced.py \
   --fix-data  # Auto-fixes date formats
 ```
 
-#### Issue: "Payload too large"
+#### Issue: "Payload too large" or HTTP 413 Error
 
 **Cause:** Too many assets/vulnerabilities for single request
 
-**Solution:**
+**Solution 1: Configure in config file (Recommended)**
+```ini
+# Edit your config_test.ini
+[batch_processing]
+enable_batching = true
+max_batch_size = 50
+max_payload_mb = 10.0
+```
+
 ```bash
-# Enable batching (default, but ensure it's on)
+# Then run normally
 python3 phoenix_multi_scanner_enhanced.py \
   --file large-scan.json \
+  --config config_test.ini \
+  --assessment "Large-Scan"
+```
+
+**Solution 2: Command-line override**
+```bash
+# Override config settings for specific run
+python3 phoenix_multi_scanner_enhanced.py \
+  --file large-scan.json \
+  --config config_test.ini \
+  --assessment "Large-Scan" \
   --enable-batching \
-  --max-batch-size 50
+  --max-batch-size 50 \
+  --max-payload-mb 10.0
 ```
 
 #### Issue: "Vulnerabilities closed unintentionally"

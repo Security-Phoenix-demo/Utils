@@ -1,5 +1,206 @@
 # Changelog - Phoenix Multi-Scanner Import Tool
 
+## [3.2.0] - 2025-11-27 - **Batching Configuration Enhancement** 🔧
+
+### ✨ **Added - Configuration File Support for Batching**
+- **NEW**: Batching parameters configurable in `.ini` config files
+  - `enable_batching` - Enable/disable intelligent batching (true/false)
+  - `max_batch_size` - Maximum items per batch (default: 500)
+  - `max_payload_mb` - Maximum payload size in MB (default: 25.0)
+- **NEW**: Configuration hierarchy system
+  - Command-line arguments (highest priority) override config file
+  - Config file values (medium priority) used if command-line not provided
+  - Default values (lowest priority) as fallback
+
+### 🎯 **Enhanced - Configuration Loading**
+- **IMPROVED**: `phoenix_multi_scanner_enhanced.py` now reads batching params from config
+- **IMPROVED**: Proper fallback chain: CLI args → config file → defaults
+- **IMPROVED**: Command-line detection to determine if user explicitly set values
+
+### 🔧 **Updated - Configuration Files**
+- **config_test.ini** - Added `[batch_processing]` section with standard defaults
+- **config_test_tv.ini** - Added `[batch_processing]` section optimized for large scans (50 batch size, 10MB payload)
+- **config_test_TEMPLATE.ini** - Added `[batch_processing]` section as template
+
+### 📋 **Configuration Section Format**
+```ini
+[batch_processing]
+# Enable intelligent batching for large payloads (true/false)
+enable_batching = true
+
+# Maximum number of items (vulnerabilities/assets) per batch
+# For large vulnerability counts (300+), reduce to 50-100
+max_batch_size = 500
+
+# Maximum payload size in MB per batch
+# For API 413 errors, reduce to 10-15 MB
+max_payload_mb = 25.0
+```
+
+### 🎯 **Usage Examples**
+
+#### Using Config File Settings (Recommended)
+```bash
+# Uses batching settings from config_test.ini
+python3 phoenix_multi_scanner_enhanced.py \
+  --file scan.json \
+  --config config_test.ini \
+  --assessment "My-Scan"
+```
+
+#### Command-Line Override
+```bash
+# Override config file settings
+python3 phoenix_multi_scanner_enhanced.py \
+  --file scan.json \
+  --config config_test.ini \
+  --assessment "My-Scan" \
+  --max-batch-size 25 \
+  --max-payload-mb 5.0
+```
+
+### 🚀 **Benefits**
+- **Simplified Usage**: Configure once in config file, use everywhere
+- **Flexibility**: Override when needed with command-line args
+- **Consistency**: Same batching settings across multiple runs
+- **Environment-Specific**: Different configs for different environments (prod, staging, dev)
+
+### 📚 **Documentation Updates**
+- **README.md** - Updated configuration and processing options sections
+- **QUICK_START_ALL_SCANNERS.md** - Added batching configuration section
+- **CHANGELOG.md** - This entry
+
+### 🔗 **Related Issues**
+- Resolves HTTP 413 "Request Entity Too Large" errors
+- Provides easier configuration management for large datasets
+- Improves user experience with sensible defaults
+
+---
+
+## [3.1.0] - 2025-11-18 - **Phoenix Native CSV & Rapid7 Support** 🚀
+
+### ✨ **Added - New Scanner Formats**
+- **NEW**: Phoenix Native CSV scanner support (`phoenix_csv`)
+  - Auto-detection of asset types (INFRA, CLOUD, WEB, SOFTWARE)
+  - Asset type-specific scanner variants: `phoenix_csv_infra`, `phoenix_csv_cloud`, `phoenix_csv_web`, `phoenix_csv_software`
+  - Support for custom asset name override via `--asset-name` flag
+  - Automatic placeholder generation for missing asset identifiers (`0.0.0.0`, `Phoenix-import-{timestamp}`)
+  - Automatic tagging of incomplete assets with `incomplete_asset=true`
+- **NEW**: Rapid7 CSV export scanner support (`rapid7_csv`, `rapid7`)
+  - CSV export parsing with metadata line skipping
+  - Vulnerability grouping by IP address
+  - Severity mapping: Critical→10, Severe→9, Moderate→6, Low→3
+  - Asset name override support
+- **NEW**: Dual upload method support
+  - Default: JSON API import (recommended)
+  - Backup: CSV import with `--import-csv-force` flag (batched in 5MB chunks)
+
+### 🎯 **Enhanced - Asset Creation Strategies**
+- **NEW**: Generic asset creation for missing identifiers
+  - One asset per vulnerability if no identifiers present
+  - User-provided asset name via `--asset-name` CLI flag
+  - Automatic placeholder values for required fields
+- **NEW**: Asset type auto-detection
+  - Filename-based detection (e.g., `demo_infra.csv` → INFRA)
+  - Column header analysis for format validation
+  - Explicit scanner type specification (e.g., `phoenix_csv_cloud`)
+
+### 🔧 **Updated - Core Components**
+- **scanner_translators/phoenix_csv_translator.py** - New Phoenix CSV translator
+- **scanner_translators/rapid7_csv_translator.py** - New Rapid7 CSV translator
+- **scanner_translators/__init__.py** - Added new translators to exports (v3.1.0)
+- **phoenix_multi_scanner_enhanced.py** - Added CLI flags: `--asset-name`, `--import-csv-force`
+- **phoenix-scanner-client/scanner_list_actual.txt** - Added 6 new scanner types
+- **phoenix-scanner-service/app/models/schemas.py** - Updated ScannerType enum
+
+### 📋 **Files Added**
+- **PHOENIX_CSV_README.md** - Comprehensive Phoenix & Rapid7 CSV documentation
+- **PHOENIX_CSV_IMPLEMENTATION_SUMMARY.md** - Technical implementation details
+- **PHOENIX_CSV_QUICK_REFERENCE.md** - Quick reference card
+- **examples/phoenix_csv_examples.sh** - Executable usage examples (9 scenarios)
+- **CLIENT_SERVICE_UPDATE_LOG.md** - Client/Service update tracking
+- **CLIENT_SERVICE_UPDATE_SUMMARY.md** - Update summary documentation
+
+### 🎨 **Features**
+
+#### Phoenix Native CSV Format
+- Supports all Phoenix asset types: INFRA, CLOUD, WEB, SOFTWARE
+- Column validation against Phoenix templates
+- Flexible asset identifier handling
+- Automatic data normalization
+
+#### Rapid7 CSV Export Format
+- Parses Rapid7 vulnerability reports
+- Handles multi-line CSV headers
+- Groups vulnerabilities by asset
+- Maps Rapid7 fields to Phoenix schema
+
+#### Import Methods
+- **JSON API (Default)**: `--scanner phoenix_csv --asset-type INFRA`
+- **CSV Force**: `--scanner phoenix_csv --import-csv-force`
+- **Custom Asset**: `--scanner rapid7_csv --asset-name "prod-server-01"`
+
+### 🧪 **Testing Support**
+Example CSV files validated:
+- `demo_infra.csv` - 500+ infrastructure vulnerabilities
+- `demo_cloud.csv` - Cloud configuration findings
+- `demo_web.csv` - Web application vulnerabilities
+- `demo_software.csv` - Software/package vulnerabilities
+- `test_cloud.csv`, `test_web.csv`, `test_software.csv` - Test datasets
+- `vuln_report_2_hosts.csv` - Rapid7 export format
+
+### 📊 **Supported Scanner Types (New)**
+
+| Scanner Type | Asset Type | Description |
+|--------------|------------|-------------|
+| `phoenix_csv` | Auto-detect | Generic Phoenix CSV (auto-detects asset type) |
+| `phoenix_csv_infra` | INFRA | Phoenix CSV for infrastructure assets |
+| `phoenix_csv_cloud` | CLOUD | Phoenix CSV for cloud assets |
+| `phoenix_csv_web` | WEB | Phoenix CSV for web applications |
+| `phoenix_csv_software` | BUILD | Phoenix CSV for software/packages |
+| `rapid7_csv` | INFRA | Rapid7 vulnerability export |
+| `rapid7` | INFRA | Rapid7 (alias for rapid7_csv) |
+
+### 🎯 **Usage Examples**
+
+```bash
+# Phoenix CSV with auto-detection
+python3 phoenix_multi_scanner_enhanced.py \
+    --file demo_infra.csv \
+    --scanner phoenix_csv
+
+# Phoenix CSV with specific asset type
+python3 phoenix_multi_scanner_enhanced.py \
+    --file demo_cloud.csv \
+    --scanner phoenix_csv_cloud
+
+# Phoenix CSV with custom asset name
+python3 phoenix_multi_scanner_enhanced.py \
+    --file demo_web.csv \
+    --scanner phoenix_csv_web \
+    --asset-name "prod-webapp-01"
+
+# Phoenix CSV with forced CSV upload
+python3 phoenix_multi_scanner_enhanced.py \
+    --file demo_software.csv \
+    --scanner phoenix_csv_software \
+    --import-csv-force
+
+# Rapid7 CSV import
+python3 phoenix_multi_scanner_enhanced.py \
+    --file vuln_report.csv \
+    --scanner rapid7_csv \
+    --asset-name "10.0.1.50"
+```
+
+### 🔗 **Related Documentation**
+- [PHOENIX_CSV_README.md](PHOENIX_CSV_README.md) - Full Phoenix CSV guide
+- [PHOENIX_CSV_QUICK_REFERENCE.md](PHOENIX_CSV_QUICK_REFERENCE.md) - Quick reference
+- [examples/phoenix_csv_examples.sh](examples/phoenix_csv_examples.sh) - Usage examples
+- [CLIENT_SERVICE_UPDATE_SUMMARY.md](CLIENT_SERVICE_UPDATE_SUMMARY.md) - Component updates
+
+---
+
 ## [4.0.0] - 2025-10-05 - **PRODUCTION READY RELEASE** 🎉
 
 ### 🎯 **MAJOR MILESTONE: Enhanced Script Fully Operational**
@@ -83,10 +284,35 @@ The `phoenix_multi_scanner_enhanced.py` script is now **100% functional and prod
 
 ## 📊 **Current Recommendations (v4.0.0)**
 
-### ✅ **PRODUCTION COMMAND**
+### ✅ **PRODUCTION COMMAND (v3.2.0+)**
+
+**Option 1: Using Config File (Recommended)**
+```ini
+# Configure once in config_test.ini
+[batch_processing]
+enable_batching = true
+max_batch_size = 50
+max_payload_mb = 15.0
+```
+
 ```bash
 python3 phoenix_multi_scanner_enhanced.py \
     --folder "your-data-folder/" \
+    --config config_test.ini \
+    --scanner auto \
+    --asset-type INFRA \
+    --tag-file "your-tags.yaml" \
+    --verify-import \
+    --assessment "Production-Import-$(date +%Y%m%d_%H%M%S)" \
+    --fix-data \
+    --create-empty-assets
+```
+
+**Option 2: Command-Line Override**
+```bash
+python3 phoenix_multi_scanner_enhanced.py \
+    --folder "your-data-folder/" \
+    --config config_test.ini \
     --scanner auto \
     --asset-type INFRA \
     --tag-file "your-tags.yaml" \
@@ -98,13 +324,15 @@ python3 phoenix_multi_scanner_enhanced.py \
     --create-empty-assets
 ```
 
-### 🎯 **KEY BENEFITS**
+### 🎯 **KEY BENEFITS (v3.2.0+)**
 - **No hanging issues** - Starts in <0.5 seconds
 - **Handles large datasets** - 500+ assets with intelligent batching
 - **Automatic data repair** - Fixes "N/A" dates and malformed CSV
 - **100% reliability** - Retry logic with exponential backoff
 - **Complete feature set** - All latest enhancements included
 - **Production tested** - Real-world validation with multiple datasets
+- **Config-based batching** 🆕 - Configure once, use everywhere
+- **Flexible overrides** 🆕 - Command-line args override config when needed
 
 ---
 

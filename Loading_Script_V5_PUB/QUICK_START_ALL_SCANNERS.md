@@ -44,6 +44,12 @@ python3 phoenix_multi_scanner_enhanced.py \
 client_id = 329078ee-a0d0-4e60-9b10-111806ec8941
 client_secret = pat1_d08fc456da6043ab8b6f8337397a4f869e3b63bcbec24f9b972c8754672a3fba
 api_base_url = https://api.demo.appsecphx.io
+
+[batch_processing]
+# Batching configuration
+enable_batching = true
+max_batch_size = 500
+max_payload_mb = 25.0
 ```
 
 ---
@@ -235,11 +241,77 @@ This will:
 | `--assessment` | ✅ Yes | Assessment name | `"Prod-Scan"` |
 | `--scanner-type` | No | Force scanner type | `trivy` |
 | `--asset-type` | No | Override asset type | `CONTAINER` |
+| `--enable-batching` | No | Enable batching (default from config) | - |
+| `--max-batch-size` | No | Max items per batch (default from config) | `50` |
+| `--max-payload-mb` | No | Max payload MB (default from config) | `10.0` |
 | `--log-level` | No | Logging level | `DEBUG` |
 
 ---
 
+## ⚙️ Batching Configuration
+
+### Config File Settings (Recommended)
+
+Configure batching in your `config_test.ini` file:
+
+```ini
+[batch_processing]
+# Enable intelligent batching for large payloads (true/false)
+enable_batching = true
+
+# Maximum number of items (vulnerabilities/assets) per batch
+# For large vulnerability counts (300+), reduce to 50-100
+max_batch_size = 500
+
+# Maximum payload size in MB per batch
+# For API 413 errors, reduce to 10-15 MB
+max_payload_mb = 25.0
+```
+
+### Command-Line Override
+
+Override config file settings when needed:
+
+```bash
+# Override batch size for specific scan
+python3 phoenix_multi_scanner_enhanced.py \
+  --file large-scan.json \
+  --config config_test.ini \
+  --assessment "Large-Scan" \
+  --max-batch-size 50 \
+  --max-payload-mb 10.0
+```
+
+### Configuration Hierarchy
+
+1. **Command-line arguments** (highest priority) - Override everything
+2. **Config file values** (medium priority) - Used if command-line not provided
+3. **Default values** (lowest priority) - Fallback if not specified
+
+---
+
 ## 🔧 Troubleshooting
+
+### Problem: "Request Entity Too Large" (HTTP 413)
+
+**Cause:** Payload exceeds API size limits
+
+**Solution 1:** Reduce batch size in config file
+```ini
+[batch_processing]
+max_batch_size = 50
+max_payload_mb = 10.0
+```
+
+**Solution 2:** Override on command line
+```bash
+python3 phoenix_multi_scanner_enhanced.py \
+  --file scan.json \
+  --config config_test.ini \
+  --assessment "test" \
+  --max-batch-size 25 \
+  --max-payload-mb 5.0
+```
 
 ### Problem: "Could not detect scanner type"
 

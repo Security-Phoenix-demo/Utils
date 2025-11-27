@@ -152,6 +152,17 @@ class EnhancedMultiScannerImportManager:
                 phoenix_config.batch_delay = section.getint('batch_delay', phoenix_config.batch_delay)
                 phoenix_config.timeout = section.getint('timeout', phoenix_config.timeout)
                 phoenix_config.check_interval = section.getint('check_interval', phoenix_config.check_interval)
+            
+            # Read batching configuration
+            if 'batch_processing' in parser:
+                section = parser['batch_processing']
+                # Store in phoenix_config for easy access
+                if not hasattr(phoenix_config, 'max_batch_size'):
+                    phoenix_config.max_batch_size = section.getint('max_batch_size', 500)
+                if not hasattr(phoenix_config, 'max_payload_mb'):
+                    phoenix_config.max_payload_mb = section.getfloat('max_payload_mb', 25.0)
+                if not hasattr(phoenix_config, 'enable_batching'):
+                    phoenix_config.enable_batching = section.getboolean('enable_batching', True)
         
         # Validate required configuration
         missing = []
@@ -282,8 +293,19 @@ class EnhancedMultiScannerImportManager:
                 ChefInspecTranslator = None
                 chef_inspec_available = False
             
-            # Add scanner config for Grype, Trivy, JFrog, BlackDuck, Prowler, Tier1, Tier2, Tier3, SARIF, Format Handlers, and Universal
+            # Add Phoenix Native CSV and Rapid7 CSV translators
+            from scanner_translators.phoenix_csv_translator import PhoenixCSVTranslator
+            from scanner_translators.rapid7_csv_translator import Rapid7CSVTranslator
+            
+            # Add scanner config for Phoenix CSV, Rapid7, Grype, Trivy, JFrog, BlackDuck, Prowler, Tier1, Tier2, Tier3, SARIF, Format Handlers, and Universal
             from phoenix_multi_scanner_import import ScannerConfig
+            self.scanner_configs['phoenix_csv'] = ScannerConfig('Phoenix Native CSV', 'INFRA')
+            self.scanner_configs['phoenix_csv_infra'] = ScannerConfig('Phoenix CSV INFRA', 'INFRA')
+            self.scanner_configs['phoenix_csv_cloud'] = ScannerConfig('Phoenix CSV CLOUD', 'CLOUD')
+            self.scanner_configs['phoenix_csv_web'] = ScannerConfig('Phoenix CSV WEB', 'WEB')
+            self.scanner_configs['phoenix_csv_software'] = ScannerConfig('Phoenix CSV SOFTWARE', 'BUILD')
+            self.scanner_configs['rapid7'] = ScannerConfig('Rapid7 VM CSV', 'INFRA')
+            self.scanner_configs['rapid7_csv'] = ScannerConfig('Rapid7 VM CSV', 'INFRA')
             self.scanner_configs['anchore_grype'] = ScannerConfig('Anchore Grype Scan', 'CONTAINER')
             self.scanner_configs['trivy'] = ScannerConfig('Trivy Scan', 'CONTAINER')
             self.scanner_configs['jfrog'] = ScannerConfig('JFrog XRay', 'BUILD')
@@ -350,9 +372,13 @@ class EnhancedMultiScannerImportManager:
             logger.info("🔧 Initializing translators (HYBRID mode: Specialized hard-coded + YAML fallback)...")
             
             # ═══════════════════════════════════════════════════════════════════════
-            # TRANSLATOR INSTANTIATION - All 42 Consolidated Translators v3.0.0
+            # TRANSLATOR INSTANTIATION - All 44 Consolidated Translators v3.1.0
             # ═══════════════════════════════════════════════════════════════════════
             self.translators = [
+                # PHOENIX NATIVE & RAPID7 CSV (2 new translators)
+                PhoenixCSVTranslator(self.scanner_configs.get('phoenix_csv', {}), tag_config, 'INFRA'),
+                Rapid7CSVTranslator(self.scanner_configs.get('rapid7_csv', {}), tag_config),
+                
                 # CONTAINER SCANNERS (5)
                 GrypeTranslator(self.scanner_configs.get('anchore_grype', {}), tag_config),
                 TrivyTranslator(self.scanner_configs.get('trivy', {}), tag_config),                  # 2→1
@@ -422,7 +448,7 @@ class EnhancedMultiScannerImportManager:
                 self.translators.insert(-1, ChefInspecTranslator(self.scanner_configs.get('chefinspect', {}), tag_config))
             
             self._translators_initialized = True
-            logger.info(f"✅ Initialized {len(self.translators)} translators v3.0.0 (MIGRATION COMPLETE: 12 major consolidations | Container[5] + Build[11] + Cloud[5] + Code/Secret[8] + Web[6] + Infrastructure[5] + Format Handlers[2] | 76+ → 42 translators + YAML fallback)")
+            logger.info(f"✅ Initialized {len(self.translators)} translators v3.1.0 (Phoenix CSV + Rapid7 CSV + 42 consolidated | Container[5] + Build[11] + Cloud[5] + Code/Secret[8] + Web[6] + Infrastructure[5] + Phoenix/Rapid7[2] + YAML fallback)")
             
         except Exception as e:
             logger.error(f"❌ CRITICAL: Failed to initialize YAML-based translator: {e}")
@@ -442,6 +468,13 @@ class EnhancedMultiScannerImportManager:
         
         # Map of scanner names to translator class name patterns
         name_mappings = {
+            'phoenix_csv': 'PhoenixCSVTranslator',
+            'phoenix_csv_infra': 'PhoenixCSVTranslator',
+            'phoenix_csv_cloud': 'PhoenixCSVTranslator',
+            'phoenix_csv_web': 'PhoenixCSVTranslator',
+            'phoenix_csv_software': 'PhoenixCSVTranslator',
+            'rapid7': 'Rapid7CSVTranslator',
+            'rapid7_csv': 'Rapid7CSVTranslator',
             'anchore_grype': 'AnchoreGrypeTranslator',
             'grype': 'AnchoreGrypeTranslator',
             'trivy': 'TrivyTranslator',
@@ -509,10 +542,31 @@ class EnhancedMultiScannerImportManager:
         # First try exact match in mappings
         if scanner_name_lower in name_mappings:
             target_class_name = name_mappings[scanner_name_lower]
-            for translator in self.translators:
-                if translator.__class__.__name__ == target_class_name:
-                    logger.info(f"✅ Found hard-coded translator: {target_class_name}")
-                    return translator
+            
+            # Special handling for Phoenix CSV - need to create with correct asset type
+            if target_class_name == 'PhoenixCSVTranslator':
+                # Determine asset type from scanner name suffix
+                asset_type = 'INFRA'  # default
+                if 'cloud' in scanner_name_lower:
+                    asset_type = 'CLOUD'
+                elif 'web' in scanner_name_lower:
+                    asset_type = 'WEB'
+                elif 'software' in scanner_name_lower or 'build' in scanner_name_lower:
+                    asset_type = 'SOFTWARE'
+                
+                # Return the PhoenixCSVTranslator (it's already instantiated with INFRA)
+                # We'll let the translator auto-detect or use the asset_type override parameter
+                for translator in self.translators:
+                    if translator.__class__.__name__ == target_class_name:
+                        # Update the translator's asset type
+                        translator.asset_type = asset_type
+                        logger.info(f"✅ Found Phoenix CSV translator: {target_class_name} (Type: {asset_type})")
+                        return translator
+            else:
+                for translator in self.translators:
+                    if translator.__class__.__name__ == target_class_name:
+                        logger.info(f"✅ Found hard-coded translator: {target_class_name}")
+                        return translator
         
         # Then try partial match in translator class name
         for translator in self.translators:
@@ -547,7 +601,8 @@ class EnhancedMultiScannerImportManager:
                                     import_type: str = "delta", anonymize: bool = False,
                                     just_tags: bool = False, create_empty_assets: bool = False,
                                     create_inventory_assets: bool = False, verify_import: bool = False,
-                                    enable_batching: bool = True, fix_data: bool = True) -> Dict[str, Any]:
+                                    enable_batching: bool = True, fix_data: bool = True,
+                                    asset_name: Optional[str] = None, import_csv_force: bool = False) -> Dict[str, Any]:
         """Enhanced file processing with validation, fixing, and batching"""
         
         logger.info(f"🚀 Enhanced processing: {file_path}")
@@ -555,6 +610,9 @@ class EnhancedMultiScannerImportManager:
         logger.info(f"   Asset Type: {asset_type or 'auto-detect'}")
         logger.info(f"   Batching: {'enabled' if enable_batching else 'disabled'}")
         logger.info(f"   Data Fixing: {'enabled' if fix_data else 'disabled'}")
+        logger.info(f"   Import Method: {'CSV (forced)' if import_csv_force else 'JSON (default)'}")
+        if asset_name:
+            logger.info(f"   Asset Name Override: {asset_name}")
         
         try:
             # Step 1: Try to detect scanner type with original file (important for CSV)
@@ -597,8 +655,8 @@ class EnhancedMultiScannerImportManager:
                         'file_path': file_path
                     }
             
-            # Step 3: Parse file to assets (pass translator object directly)
-            assets = self._parse_file_to_assets(processed_file_path, translator, asset_type)
+            # Step 3: Parse file to assets (pass translator object directly and asset_name)
+            assets = self._parse_file_to_assets(processed_file_path, translator, asset_type, asset_name)
             
             # OPTION 3: Lenient parsing with fallback asset creation
             if not assets:
@@ -771,13 +829,15 @@ class EnhancedMultiScannerImportManager:
             logger.debug(traceback.format_exc())
             return []
     
-    def _parse_file_to_assets(self, file_path: str, translator_or_name, asset_type: Optional[str]):
+    def _parse_file_to_assets(self, file_path: str, translator_or_name, asset_type: Optional[str], 
+                              asset_name: Optional[str] = None):
         """Parse file to assets using appropriate translator
         
         Args:
             file_path: Path to file to parse
             translator_or_name: Either a translator object or scanner name string
             asset_type: Optional asset type override
+            asset_name: Optional asset name override (for Phoenix/Rapid7 CSV)
         """
         
         # Convert to absolute path if relative (for translator access)
@@ -829,8 +889,13 @@ class EnhancedMultiScannerImportManager:
             if not translator:
                 raise ValueError(f"No suitable translator found for scanner type: {translator_or_name}")
         
-        # Parse the file
-        assets = translator.parse_file(file_path)
+        # Parse the file - check if translator supports asset_name parameter
+        translator_class_name = translator.__class__.__name__
+        if translator_class_name in ['PhoenixCSVTranslator', 'Rapid7CSVTranslator'] and asset_name:
+            logger.info(f"🏷️ Using asset name override: {asset_name}")
+            assets = translator.parse_file(file_path, asset_name_override=asset_name)
+        else:
+            assets = translator.parse_file(file_path)
         
         # Override asset type if specified
         if asset_type:
@@ -915,7 +980,8 @@ class EnhancedMultiScannerImportManager:
                               import_type: str = "new", anonymize: bool = False,
                               just_tags: bool = False, create_empty_assets: bool = False,
                               create_inventory_assets: bool = False, enable_batching: bool = True,
-                              fix_data: bool = True) -> Dict[str, Any]:
+                              fix_data: bool = True, asset_name: Optional[str] = None,
+                              import_csv_force: bool = False) -> Dict[str, Any]:
         """Enhanced folder processing with validation and batching"""
         
         if file_types is None:
@@ -960,7 +1026,9 @@ class EnhancedMultiScannerImportManager:
                     create_empty_assets=create_empty_assets,
                     create_inventory_assets=create_inventory_assets,
                     enable_batching=enable_batching,
-                    fix_data=fix_data
+                    fix_data=fix_data,
+                    asset_name=asset_name,
+                    import_csv_force=import_csv_force
                 )
                 
                 results.append(result)
@@ -1044,6 +1112,9 @@ Examples:
                        help='Zero out vulnerability risk while keeping vulnerability data (for testing/staging)')
     parser.add_argument('--create-inventory-assets', action='store_true',
                        help='Create assets even if no vulnerabilities found (with zero risk placeholder for inventory)')
+    parser.add_argument('--asset-name', type=str, help='Override asset name/identifier for Phoenix/Rapid7 CSV imports (all vulnerabilities attached to this asset)')
+    parser.add_argument('--import-csv-force', action='store_true',
+                       help='Force direct CSV upload to Phoenix (batched in 5MB chunks) instead of JSON conversion. Only for Phoenix native CSV format.')
     
     # Enhanced options
     parser.add_argument('--enable-batching', action='store_true', default=True,
@@ -1103,7 +1174,27 @@ Examples:
         # Initialize enhanced manager
         manager = EnhancedMultiScannerImportManager(args.config)
         
-        # Configure batching parameters
+        # Configure batching parameters with proper hierarchy:
+        # 1. Command-line args (if explicitly provided)
+        # 2. Config file values
+        # 3. Default values
+        
+        # Check if command-line args were explicitly provided
+        import sys
+        cmd_line_args = sys.argv
+        
+        # Use config file values if command-line args not provided
+        if '--max-batch-size' not in cmd_line_args and hasattr(manager.phoenix_config, 'max_batch_size'):
+            args.max_batch_size = manager.phoenix_config.max_batch_size
+        
+        if '--max-payload-mb' not in cmd_line_args and hasattr(manager.phoenix_config, 'max_payload_mb'):
+            args.max_payload_mb = manager.phoenix_config.max_payload_mb
+        
+        if '--enable-batching' not in cmd_line_args and '--disable-batching' not in cmd_line_args:
+            if hasattr(manager.phoenix_config, 'enable_batching'):
+                args.enable_batching = manager.phoenix_config.enable_batching
+        
+        # Apply the final values to the importer
         manager.enhanced_importer.max_batch_size = args.max_batch_size
         manager.enhanced_importer.max_payload_size_mb = args.max_payload_mb
         
@@ -1126,7 +1217,9 @@ Examples:
                 enable_batching=args.enable_batching,
                 fix_data=args.fix_data,
                 create_empty_assets=args.create_empty_assets,
-                create_inventory_assets=args.create_inventory_assets
+                create_inventory_assets=args.create_inventory_assets,
+                asset_name=args.asset_name,
+                import_csv_force=args.import_csv_force
             )
             
             if result['success']:
@@ -1161,7 +1254,9 @@ Examples:
                 enable_batching=args.enable_batching,
                 fix_data=args.fix_data,
                 create_empty_assets=args.create_empty_assets,
-                create_inventory_assets=args.create_inventory_assets
+                create_inventory_assets=args.create_inventory_assets,
+                asset_name=args.asset_name,
+                import_csv_force=args.import_csv_force
             )
             
             print(f"📁 Processed folder: {args.folder}")
