@@ -1,5 +1,98 @@
 # Changelog - Phoenix Multi-Scanner Import Tool
 
+## [3.3.0] - 2026-01-31 - **Security Updates & Code Sync** 🔒
+
+### 🔒 **CRITICAL - Security Vulnerability Fixes**
+
+This release addresses **25+ security vulnerabilities** across all dependencies:
+
+| Package | Old Version | New Version | CVEs Fixed | Severity |
+|---------|------------|-------------|------------|----------|
+| **requests** | >=2.31.0 | >=2.32.4 | CVE-2024-47081 (.netrc credentials leak) | Moderate |
+| **python-multipart** | >=0.0.18 | >=0.0.22 | CVE-2026-24486, CVE-2024-24762, CVE-2024-53981 | High |
+| **python-jose** | >=3.3.0 | >=3.4.0 | CVE-2024-33663 (algorithm confusion) | Critical |
+| **aiohttp** | >=3.9.2 | >=3.13.3 | CVE-2025-69223 (zip bomb DoS) + 5 more | High |
+| **urllib3** | >=2.0.0 | >=2.6.0 | CVE-2025-66418, CVE-2025-66471 | High |
+| **starlette** | >=0.40.0 | >=0.49.1 | CVE-2025-62727, CVE-2023-30798 | High |
+| **python-socketio** | ==5.11.0 | >=5.14.0 | CVE-2025-61765 (RCE via pickle) | Moderate |
+| **pyasn1** | (not pinned) | >=0.6.2 | CVE-2026-23490 (DoS in decoder) | High |
+| **fastapi** | ==0.109.0 | >=0.115.0 | Compatible with secure starlette | - |
+
+### 🔄 **Synced - Code Updates from Private Repository**
+
+- **phoenix_multi_scanner_enhanced.py** - Updated to v3.1.0 with all latest features
+- **phoenix_multi_scanner_import.py** - Improved tag filtering and date handling
+- **phoenix_import_enhanced.py** - Better API response validation
+- **phoenix_import_refactored.py** - Core import logic updates
+- **scanner_translators/** - All translator updates synced
+
+### ✨ **Added - New Scanner Translators**
+
+- **phoenix_csv_translator.py** - Phoenix native CSV format support
+- **rapid7_csv_translator.py** - Rapid7 VM CSV export support
+- **scanner_translators/__init__.py** - Updated to v3.1.0 (44 translators)
+
+### 🎯 **Enhanced - Import Features**
+
+- **Asset Name Override** - New `--asset-name` CLI argument for custom asset naming
+- **Interactive Prompt** - Prompts for custom asset name when not provided
+- **Empty Tag Filtering** - Automatically removes tags with empty values before API calls
+- **ISO-8601 Date Conversion** - Improved date handling for various scanner formats
+- **API Response Validation** - Better error detection for failed imports
+
+### 🔧 **Updated - Requirements Files**
+
+All requirements files updated with security-pinned minimum versions:
+- `requirements.txt` (main)
+- `phoenix-scanner-service/requirements.txt`
+- `phoenix-scanner-client/requirements.txt`
+- `unit_tests/requirements.txt`
+- `requirements-dev.txt`
+
+### 📋 **Files Changed**
+
+| File | Change Type | Description |
+|------|-------------|-------------|
+| `phoenix_multi_scanner_enhanced.py` | Updated | v3.1.0 with Phoenix/Rapid7 CSV support |
+| `phoenix_multi_scanner_import.py` | Updated | Tag filtering, date conversion |
+| `phoenix_import_enhanced.py` | Updated | API validation improvements |
+| `phoenix_import_refactored.py` | Updated | Core import logic sync |
+| `scanner_translators/__init__.py` | Updated | v3.1.0 exports (44 translators) |
+| `scanner_translators/phoenix_csv_translator.py` | Added | Phoenix native CSV |
+| `scanner_translators/rapid7_csv_translator.py` | Added | Rapid7 VM CSV |
+| `scanner_translators/aqua_translator.py` | Updated | Asset name override support |
+| `requirements.txt` | Updated | Security fixes |
+| `phoenix-scanner-service/requirements.txt` | Updated | Security fixes |
+| `phoenix-scanner-client/requirements.txt` | Updated | Security fixes |
+
+### 🚀 **Upgrade Instructions**
+
+```bash
+# Update dependencies to fix security vulnerabilities
+pip install --upgrade -r requirements.txt
+
+# For phoenix-scanner-service
+pip install --upgrade -r phoenix-scanner-service/requirements.txt
+
+# For phoenix-scanner-client
+pip install --upgrade -r phoenix-scanner-client/requirements.txt
+```
+
+### ⚠️ **Breaking Changes**
+
+- **Minimum Python version**: Still 3.8+, but recommended 3.10+ for best compatibility
+- **Dependency versions**: Minimum versions increased for security - ensure `pip install --upgrade`
+
+### 🔗 **Security References**
+
+- [CVE-2024-47081](https://nvd.nist.gov/vuln/detail/CVE-2024-47081) - requests .netrc leak
+- [CVE-2024-33663](https://nvd.nist.gov/vuln/detail/CVE-2024-33663) - python-jose algorithm confusion
+- [CVE-2025-69223](https://nvd.nist.gov/vuln/detail/CVE-2025-69223) - aiohttp zip bomb
+- [CVE-2025-66418](https://nvd.nist.gov/vuln/detail/CVE-2025-66418) - urllib3 decompression chain
+- [CVE-2025-61765](https://nvd.nist.gov/vuln/detail/CVE-2025-61765) - python-socketio RCE
+
+---
+
 ## [3.2.0] - 2025-11-27 - **Batching Configuration Enhancement** 🔧
 
 ### ✨ **Added - Configuration File Support for Batching**
