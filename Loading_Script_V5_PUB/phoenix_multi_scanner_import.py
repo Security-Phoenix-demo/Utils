@@ -176,9 +176,15 @@ class ScannerTranslator(ABC):
         if "tags" not in vulnerability:
             vulnerability["tags"] = []
         
-        # Add vulnerability tags
-        vulnerability["tags"].extend(vuln_tags)
-        logger.debug(f"Applied tags to vulnerability '{vulnerability.get('name', 'unknown')}': {len(vulnerability['tags'])} total tags")
+        # Filter out tags with empty values before adding them
+        filtered_vuln_tags = [
+            tag for tag in vuln_tags 
+            if tag.get("value") and str(tag.get("value")).strip()
+        ]
+        
+        # Add filtered vulnerability tags
+        vulnerability["tags"].extend(filtered_vuln_tags)
+        logger.debug(f"Applied {len(filtered_vuln_tags)} tags to vulnerability '{vulnerability.get('name', 'unknown')}': {len(vulnerability['tags'])} total tags")
         
         return vulnerability
     
@@ -236,8 +242,15 @@ class ScannerTranslator(ABC):
         # Apply asset-type specific tags to the asset itself
         if self.tag_config:
             asset_type_tags = self.tag_config.get_asset_type_tags(asset.asset_type)
-            asset.tags.extend(asset_type_tags)
-        
+            # Filter out empty tags before extending
+            filtered_asset_type_tags = [
+                tag for tag in asset_type_tags 
+                if tag.get("value") and str(tag.get("value")).strip()
+            ]
+            logger.debug(f"🔍 Asset type tags before filter: {asset_type_tags}")
+            logger.debug(f"🔍 Asset type tags after filter: {filtered_asset_type_tags}")
+            asset.tags.extend(filtered_asset_type_tags)
+
         return asset
 
 
@@ -678,6 +691,10 @@ class TrivyTranslator(ScannerTranslator):
 class AquaScanTranslator(ScannerTranslator):
     """Translator for Aqua Security scanner results"""
     
+    def __init__(self, scanner_config: ScannerConfig, tag_config: TagConfig, create_empty_assets: bool = False, create_inventory_assets: bool = False):
+        super().__init__(scanner_config, tag_config, create_empty_assets, create_inventory_assets)
+        self.asset_name_override = None  # Add support for asset name override
+    
     def can_handle(self, file_path: str, file_content: Any = None) -> bool:
         """Check if this is an Aqua scan file"""
         if not file_path.lower().endswith('.json'):
@@ -704,8 +721,46 @@ class AquaScanTranslator(ScannerTranslator):
         except:
             return False
     
-    def parse_file(self, file_path: str) -> List[AssetData]:
-        """Parse Aqua scan results"""
+    def _convert_date_to_iso8601(self, date_str: str) -> str:
+        """Convert date string to ISO-8601 format with time (YYYY-MM-DDTHH:MM:SS)"""
+        if not date_str or date_str.strip() in ['N/A', '', 'NULL', 'null', 'None']:
+            return datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+        
+        # Clean the date string
+        date_str = date_str.strip()
+        
+        # Common date formats to handle
+        date_formats = [
+            '%Y-%m-%dT%H:%M:%S',      # ISO format with time
+            '%Y-%m-%d %H:%M:%S',      # Standard datetime
+            '%Y-%m-%d',               # Date only (YYYY-MM-DD)
+            '%m/%d/%Y %H:%M:%S',      # US format with time
+            '%m/%d/%Y',               # US format
+            '%d/%m/%Y %H:%M:%S',      # EU format with time
+            '%d/%m/%Y',               # EU format
+            '%b %d, %Y %H:%M:%S',     # Text month with time
+            '%b %d, %Y',              # Text month
+            '%Y/%m/%d',               # Alternative format
+        ]
+        
+        for fmt in date_formats:
+            try:
+                dt = datetime.strptime(date_str, fmt)
+                return dt.strftime('%Y-%m-%dT%H:%M:%S')
+            except ValueError:
+                continue
+        
+        # If no format matches, log warning and return current time
+        logger.warning(f"Could not parse date '{date_str}', using current time")
+        return datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+    
+    def parse_file(self, file_path: str, asset_name_override: Optional[str] = None) -> List[AssetData]:
+        """Parse Aqua scan results
+        
+        Args:
+            file_path: Path to Aqua scan file
+            asset_name_override: Optional custom asset name to override default detection
+        """
         logger.info(f"Parsing Aqua scan file: {file_path}")
         
         # Log file processing start
@@ -724,7 +779,22 @@ class AquaScanTranslator(ScannerTranslator):
         assets = []
         
         # Extract image information
-        image_name = data.get('image', 'unknown-image')
+        # Priority: command-line override > JSON 'image' field > resource.name > fallback
+        if asset_name_override or self.asset_name_override:
+            image_name = asset_name_override or self.asset_name_override
+            logger.info(f"🏷️ Using custom asset name: {image_name}")
+        else:
+            # Try multiple sources for the image/asset name
+            image_name = (
+                data.get('image') or  # Standard Aqua image field
+                (data.get('resource', {}).get('name') if data.get('resource') else None) or  # NPM package name
+                'unknown-image'
+            )
+            
+            # Include version if available for better asset identification (only if not custom override)
+            if data.get('resource', {}).get('version') and ':' not in image_name:
+                image_name = f"{image_name}:{data['resource']['version']}"
+        
         image_digest = data.get('digest', '')
         os_info = f"{data.get('os', '')} {data.get('version', '')}".strip()
         
@@ -737,14 +807,39 @@ class AquaScanTranslator(ScannerTranslator):
         if image_name:
             asset_attributes['repository'] = image_name
         
+        # Build tags, filtering out empty values
+        aqua_tags = [
+            {"key": "scanner", "value": "aqua"}
+        ]
+
+        # Debug: Log what we have
+        logger.info(f"🔍 DEBUG: image_digest = '{image_digest}' (type: {type(image_digest)}, bool: {bool(image_digest)})")
+        logger.info(f"🔍 DEBUG: os_info = '{os_info}' (type: {type(os_info)}, bool: {bool(os_info)})")
+
+        # Only add image-digest tag if it has a value
+        if image_digest:
+            aqua_tags.append({"key": "image-digest", "value": image_digest[:16]})
+            logger.info(f"✅ Added image-digest tag with value: '{image_digest[:16]}'")
+
+        # Only add os tag if it has a meaningful value
+        if os_info:
+            aqua_tags.append({"key": "os", "value": os_info})
+            logger.info(f"✅ Added os tag with value: '{os_info}'")
+
+        # Combine all tags and filter out any with empty values
+        all_tags = self.tag_config.get_all_tags() + aqua_tags
+        logger.info(f"🔍 DEBUG: all_tags before filtering = {all_tags}")
+        
+        filtered_tags = [
+            tag for tag in all_tags 
+            if tag.get("value") and str(tag.get("value")).strip()
+        ]
+        logger.info(f"🔍 DEBUG: filtered_tags after filtering = {filtered_tags}")
+
         asset = AssetData(
             asset_type="CONTAINER",
             attributes=asset_attributes,
-            tags=self.tag_config.get_all_tags() + [
-                {"key": "scanner", "value": "aqua"},
-                {"key": "image-digest", "value": image_digest[:16] if image_digest else ""},
-                {"key": "os", "value": os_info if os_info else "unknown"}
-            ]
+            tags=filtered_tags
         )
         
         # Process vulnerabilities from resources
@@ -754,6 +849,10 @@ class AquaScanTranslator(ScannerTranslator):
             vulnerabilities = resource.get('vulnerabilities', [])
             
             for vuln in vulnerabilities:
+                # Convert publish_date to ISO-8601 format with time
+                publish_date = vuln.get('publish_date', '')
+                published_date_time = self._convert_date_to_iso8601(publish_date) if publish_date else None
+                
                 # Create vulnerability
                 vulnerability = VulnerabilityData(
                     name=vuln.get('name', 'Unknown Vulnerability'),
@@ -762,7 +861,7 @@ class AquaScanTranslator(ScannerTranslator):
                     severity=self.normalize_severity(vuln.get('aqua_severity', vuln.get('nvd_severity', 'medium'))),
                     location=f"{resource_info.get('name', '')}:{resource_info.get('version', '')}",
                     reference_ids=[vuln.get('name', '')] if vuln.get('name', '').startswith('CVE-') else [],
-                    published_date_time=vuln.get('publish_date', datetime.now().strftime("%Y-%m-%d")),
+                    published_date_time=published_date_time,
                     details={
                         'package_name': resource_info.get('name', ''),
                         'package_version': resource_info.get('version', ''),
@@ -774,7 +873,7 @@ class AquaScanTranslator(ScannerTranslator):
                         'fix_version': vuln.get('fix_version', ''),
                         'nvd_url': vuln.get('nvd_url', ''),
                         'vendor_severity': vuln.get('vendor_severity', ''),
-                        'modification_date': vuln.get('modification_date', '')
+                        'modification_date': self._convert_date_to_iso8601(vuln.get('modification_date', '')) if vuln.get('modification_date') else ''
                     }
                 )
                 

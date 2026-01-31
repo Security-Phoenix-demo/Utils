@@ -105,6 +105,12 @@ from .msdefender_translator import MSDefenderTranslator
 from .dsop_translator import DSOPTranslator
 
 # =============================================================================
+# PHOENIX & RAPID7 CSV (2) - New native format support
+# =============================================================================
+from .phoenix_csv_translator import PhoenixCSVTranslator
+from .rapid7_csv_translator import Rapid7CSVTranslator
+
+# =============================================================================
 # EXPORTS
 # =============================================================================
 __all__ = [
@@ -165,9 +171,13 @@ __all__ = [
     'KubeauditTranslator',
     'MSDefenderTranslator',
     'DSOPTranslator',
+    
+    # Phoenix & Rapid7 CSV (2) - Native formats
+    'PhoenixCSVTranslator',
+    'Rapid7CSVTranslator',
 ]
 
 # Version info
-__version__ = '3.0.0'
+__version__ = '3.1.0'
 __author__ = 'Phoenix Security Team'
-__description__ = 'Consolidated Scanner Translators (76+ → 42 translators, 12 major consolidations) ✅ MIGRATION COMPLETE'
+__description__ = 'Consolidated Scanner Translators + Phoenix/Rapid7 CSV (44 translators, 12 major consolidations + native CSV support) ✅'

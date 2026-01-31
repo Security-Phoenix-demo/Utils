@@ -5,7 +5,7 @@ Handles large payloads, automatic batching, retry logic, and comprehensive valid
 
 Author: Francesco Cipolloen
 Version: 2.0.0
-Date: 1st October 2025
+Date: 14th Dec 2025
 """
 
 import json
@@ -305,11 +305,26 @@ class EnhancedPhoenixImportManager(PhoenixImportManager):
                 
                 # Handle tuple response from import_assets
                 request_id = None
+                response_data = None
                 if isinstance(result, tuple) and len(result) >= 2:
                     request_id, response_data = result
                 elif isinstance(result, dict):
                     request_id = result.get('request_id')
+                    response_data = result
+
+                # Check if import actually succeeded
+                # Phoenix API can return success without a request ID for synchronous imports
+                if request_id is None and response_data is None:
+                    # No request ID and no response data means failure
+                    raise Exception("Import failed: No response from API")
                 
+                # Check if response_data indicates failure
+                if isinstance(response_data, dict):
+                    status = response_data.get('status', '').lower()
+                    if status in ['error', 'failed']:
+                        error_msg = response_data.get('message', 'Unknown error')
+                        raise Exception(f"Import failed: {error_msg}")
+
                 return BatchResult(
                     batch_number=batch_number,
                     success=True,

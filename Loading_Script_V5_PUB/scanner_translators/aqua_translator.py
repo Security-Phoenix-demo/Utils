@@ -29,6 +29,32 @@ logger = logging.getLogger(__name__)
 class AquaTranslator(ScannerTranslator):
     """Translator for Aqua Security scanner results"""
     
+    def _convert_date_to_iso8601(self, date_str: str) -> str:
+        """Convert various date formats to ISO-8601 format (YYYY-MM-DDTHH:MM:SS)"""
+        if not date_str:
+            return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        
+        # Try various date formats
+        formats = [
+            "%Y-%m-%dT%H:%M:%S",      # Already ISO-8601 with time
+            "%Y-%m-%dT%H:%M:%SZ",     # ISO-8601 with Z
+            "%Y-%m-%d %H:%M:%S",      # Space separated
+            "%Y-%m-%d",               # Date only
+            "%d/%m/%Y",               # European format
+            "%m/%d/%Y",               # US format
+        ]
+        
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(date_str.strip(), fmt)
+                return dt.strftime("%Y-%m-%dT%H:%M:%S")
+            except ValueError:
+                continue
+        
+        # If no format matches, return current time
+        logger.warning(f"Could not parse date '{date_str}', using current time")
+        return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    
     def can_handle(self, file_path: str, file_content: Any = None) -> bool:
         """Check if this is an Aqua scan file"""
         if not file_path.lower().endswith('.json'):
@@ -56,8 +82,13 @@ class AquaTranslator(ScannerTranslator):
             logger.debug(f"AquaTranslator.can_handle failed: {e}")
             return False
     
-    def parse_file(self, file_path: str) -> List[AssetData]:
-        """Parse Aqua scan results"""
+    def parse_file(self, file_path: str, asset_name_override: str = None) -> List[AssetData]:
+        """Parse Aqua scan results
+        
+        Args:
+            file_path: Path to the Aqua scan JSON file
+            asset_name_override: Optional custom asset name to use instead of the one from the file
+        """
         logger.info(f"Parsing Aqua scan file: {file_path}")
         
         try:
@@ -69,8 +100,13 @@ class AquaTranslator(ScannerTranslator):
         
         assets = []
         
-        # Extract image information
-        image_name = data.get('image', 'unknown-image')
+        # Extract image information - use override if provided
+        if asset_name_override:
+            image_name = asset_name_override
+            logger.info(f"🏷️ Using custom asset name: {image_name}")
+        else:
+            image_name = data.get('image', 'unknown-image')
+            logger.info(f"📦 Using asset name from file: {image_name}")
         image_digest = data.get('digest', '')
         os_info = f"{data.get('os', '')} {data.get('version', '')}".strip()
         
@@ -83,14 +119,28 @@ class AquaTranslator(ScannerTranslator):
         if image_name:
             asset_attributes['repository'] = image_name
         
+        # Build tags conditionally - only add tags with non-empty values
+        aqua_tags = [{"key": "scanner", "value": "aqua"}]
+        
+        # Only add image-digest if it exists
+        if image_digest and str(image_digest).strip():
+            aqua_tags.append({"key": "image-digest", "value": image_digest[:16]})
+        
+        # Only add os if it's not empty/unknown
+        if os_info and str(os_info).strip() and os_info != "unknown":
+            aqua_tags.append({"key": "os", "value": os_info})
+        
+        # Combine all tags and filter out any with empty values
+        all_tags = self.tag_config.get_all_tags() + aqua_tags
+        filtered_tags = [
+            tag for tag in all_tags 
+            if tag.get("value") and str(tag.get("value")).strip()
+        ]
+        
         asset = AssetData(
             asset_type="CONTAINER",
             attributes=asset_attributes,
-            tags=self.tag_config.get_all_tags() + [
-                {"key": "scanner", "value": "aqua"},
-                {"key": "image-digest", "value": image_digest[:16] if image_digest else ""},
-                {"key": "os", "value": os_info if os_info else "unknown"}
-            ]
+            tags=filtered_tags
         )
         
         # Process vulnerabilities from resources
@@ -100,6 +150,10 @@ class AquaTranslator(ScannerTranslator):
             vulnerabilities = resource.get('vulnerabilities', [])
             
             for vuln in vulnerabilities:
+                # Convert dates to ISO-8601 format
+                publish_date = vuln.get('publish_date', '')
+                published_date_time = self._convert_date_to_iso8601(publish_date) if publish_date else None
+                
                 # Create vulnerability
                 vulnerability = VulnerabilityData(
                     name=vuln.get('name', 'Unknown Vulnerability'),
@@ -108,7 +162,7 @@ class AquaTranslator(ScannerTranslator):
                     severity=self.normalize_severity(vuln.get('aqua_severity', vuln.get('nvd_severity', 'medium'))),
                     location=f"{resource_info.get('name', '')}:{resource_info.get('version', '')}",
                     reference_ids=[vuln.get('name', '')] if vuln.get('name', '').startswith('CVE-') else [],
-                    published_date_time=vuln.get('publish_date', datetime.now().strftime("%Y-%m-%d")),
+                    published_date_time=published_date_time,
                     details={
                         'package_name': resource_info.get('name', ''),
                         'package_version': resource_info.get('version', ''),
@@ -120,7 +174,7 @@ class AquaTranslator(ScannerTranslator):
                         'fix_version': vuln.get('fix_version', ''),
                         'nvd_url': vuln.get('nvd_url', ''),
                         'vendor_severity': vuln.get('vendor_severity', ''),
-                        'modification_date': vuln.get('modification_date', '')
+                        'modification_date': self._convert_date_to_iso8601(vuln.get('modification_date', '')) if vuln.get('modification_date') else ''
                     }
                 )
                 

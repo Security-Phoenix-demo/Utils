@@ -889,11 +889,23 @@ class EnhancedMultiScannerImportManager:
             if not translator:
                 raise ValueError(f"No suitable translator found for scanner type: {translator_or_name}")
         
-        # Parse the file - check if translator supports asset_name parameter
+        # Parse the file - pass asset_name if provided
         translator_class_name = translator.__class__.__name__
-        if translator_class_name in ['PhoenixCSVTranslator', 'Rapid7CSVTranslator'] and asset_name:
-            logger.info(f"🏷️ Using asset name override: {asset_name}")
-            assets = translator.parse_file(file_path, asset_name_override=asset_name)
+        
+        # Set asset name override on translator object if supported
+        if asset_name and hasattr(translator, 'asset_name_override'):
+            translator.asset_name_override = asset_name
+            logger.info(f"🏷️ Set asset name override on translator: {asset_name}")
+        
+        # Parse with asset_name parameter if supported
+        if asset_name and translator_class_name in ['PhoenixCSVTranslator', 'Rapid7CSVTranslator', 'AquaScanTranslator', 'AquaTranslator']:
+            logger.info(f"🏷️ Passing asset name override to {translator_class_name}: {asset_name}")
+            try:
+                assets = translator.parse_file(file_path, asset_name_override=asset_name)
+            except TypeError:
+                # Fallback if translator doesn't support asset_name_override parameter
+                logger.warning(f"⚠️ {translator_class_name} doesn't support asset_name_override parameter, using default name")
+                assets = translator.parse_file(file_path)
         else:
             assets = translator.parse_file(file_path)
         
@@ -1149,6 +1161,30 @@ Examples:
                        help='File to log errors to (in addition to main log)')
     
     args = parser.parse_args()
+    
+    # Interactive prompt for asset name if not provided and not using folder mode
+    if args.file and not args.asset_name and not args.just_tags:
+        print("\n" + "="*70)
+        print("🏷️  ASSET NAME CONFIGURATION")
+        print("="*70)
+        print("You can specify a custom asset name for this import.")
+        print("This is particularly useful for:")
+        print("  • Container scans without an 'image' field")
+        print("  • Infrastructure scans where you want a specific hostname")
+        print("  • Build scans where you want a custom identifier")
+        print("\nLeave blank to use the default name from the scan file.")
+        print("-"*70)
+        
+        try:
+            custom_name = input("Enter custom asset name (or press Enter to skip): ").strip()
+            if custom_name:
+                args.asset_name = custom_name
+                print(f"✅ Using custom asset name: {custom_name}")
+            else:
+                print("ℹ️  Using default asset name from scan file")
+        except (EOFError, KeyboardInterrupt):
+            print("\nℹ️  Skipping custom asset name")
+        print("="*70 + "\n")
     
     # Handle conflicting options
     if args.disable_batching:

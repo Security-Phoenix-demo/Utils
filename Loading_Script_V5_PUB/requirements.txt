@@ -19,7 +19,8 @@
 
 # HTTP Requests - For Phoenix Security API communication
 # Used by: phoenix_import_refactored.py, phoenix_import_enhanced.py
-requests>=2.31.0,<3.0.0
+# SECURITY: Minimum version 2.32.4 required to fix CVE-2024-47081 (.netrc credentials leak)
+requests>=2.32.4,<3.0.0
 
 # YAML Parser - For scanner configuration and field mappings
 # Used by: scanner_field_mapper.py, tag configuration, scanner mappings

@@ -1091,6 +1091,20 @@ class PhoenixAPIClient:
         try:
             logger.info(f"Importing {len(phoenix_assets)} assets to Phoenix...")
             
+            # Debug: Log all tags being sent
+            for idx, asset in enumerate(phoenix_assets):
+                logger.info(f"🏷️  Asset {idx+1} tags: {asset.get('tags', [])}")
+                for tag in asset.get('tags', []):
+                    logger.info(f"   - {tag.get('key')}: '{tag.get('value')}'")
+                
+                # Also check vulnerability tags
+                for vidx, vuln in enumerate(asset.get('findings', [])):
+                    vuln_tags = vuln.get('tags', [])
+                    if vuln_tags:
+                        logger.info(f"🔍 Vulnerability {vidx+1} ({vuln.get('name', 'unknown')}) tags: {vuln_tags}")
+                        for tag in vuln_tags:
+                            logger.info(f"   - {tag.get('key')}: '{tag.get('value')}'")
+            
             # Log request details
             DebugLogger.log_request("POST", url, headers, payload, f"import: {assessment_name}")
             
