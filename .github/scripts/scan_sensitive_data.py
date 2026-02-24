@@ -191,10 +191,7 @@ def scan_file(
         if known_ids_re:
             match = known_ids_re.search(line)
             if match:
-                snippet = redact_line(line, match.start(), match.end())
-                findings.append(
-                    (rel_path, line_number, "known_account_id", snippet.strip())
-                )
+                findings.append((rel_path, line_number, "known_account_id", ""))
 
         for name, regex in patterns.items():
             for match in regex.finditer(line):
@@ -208,8 +205,7 @@ def scan_file(
                         for account_id in account_ids
                     ):
                         continue
-                snippet = redact_line(line, match.start(), match.end())
-                findings.append((rel_path, line_number, name, snippet.strip()))
+                findings.append((rel_path, line_number, name, ""))
                 if max_findings and (len(findings) + current_count) >= max_findings:
                     truncated = True
                     return findings, truncated
@@ -235,8 +231,8 @@ def normalize_paths(paths):
 
 def format_findings(findings):
     lines = ["Sensitive data findings:"]
-    for path, line_number, name, snippet in findings:
-        lines.append(f"- {path}:{line_number} [{name}] {snippet}")
+    for path, line_number, name, _ in findings:
+        lines.append(f"- {path}:{line_number} [{name}]")
     return "\n".join(lines)
 
 
@@ -275,8 +271,23 @@ def write_report(report_path: Path, findings, scanned_files, truncated):
     report_content = "\n".join(report_lines)
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    with report_path.open("a", encoding="utf-8") as handle:
+    with report_path.open("w", encoding="utf-8") as handle:
         handle.write(report_content)
+
+
+def write_error_report(report_path: Path, error_message: str):
+    report_lines = [
+        "## Sensitive Data Scan",
+        "",
+        "Scan failed to complete.",
+        "",
+        f"Error: {error_message}",
+        "",
+        "Please review the workflow logs for details.",
+    ]
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    with report_path.open("w", encoding="utf-8") as handle:
+        handle.write("\n".join(report_lines))
 
 
 def main():
@@ -310,64 +321,75 @@ def main():
     )
     args = parser.parse_args()
 
-    config = load_patterns()
-    patterns = build_regexes(config["patterns"])
-    allowlist = build_allowlist(config["allowlist_regexes"])
-    account_id_allowlist = build_account_id_allowlist(config["anonymized_account_id_regexes"])
-    known_ids = config["known_account_ids"]
-    anonymized_prefix = config["anonymized_account_prefix"]
-
-    if args.paths:
-        paths = normalize_paths(args.paths)
-    else:
-        paths = [Path(path) for path in get_changed_files(args.base_ref, args.head_ref)]
-
-    findings = []
-    scanned_files = 0
-    truncated_any = False
-    for path in paths:
-        abs_path = (REPO_ROOT / path).resolve() if not path.is_absolute() else path
-        if not abs_path.exists() or abs_path.is_dir():
-            continue
-        rel_path = abs_path.relative_to(REPO_ROOT)
-        if should_skip_file(rel_path, config, args.include_ignored, args.include_anonymized):
-            continue
-        if is_binary_file(abs_path):
-            continue
-        scanned_files += 1
-        new_findings, truncated = scan_file(
-            abs_path,
-            rel_path,
-            patterns,
-            known_ids,
-            anonymized_prefix,
-            account_id_allowlist,
-            allowlist,
-            max_findings=args.max_findings,
-            current_count=len(findings),
+    try:
+        config = load_patterns()
+        patterns = build_regexes(config["patterns"])
+        allowlist = build_allowlist(config["allowlist_regexes"])
+        account_id_allowlist = build_account_id_allowlist(
+            config["anonymized_account_id_regexes"]
         )
-        findings.extend(new_findings)
-        if truncated:
-            truncated_any = True
-            break
+        known_ids = config["known_account_ids"]
+        anonymized_prefix = config["anonymized_account_prefix"]
 
-    if findings:
-        print("SENSITIVE DATA DETECTED")
-        print(format_findings(findings))
-        print()
-        print(format_findings_summary(findings))
-        print(f"\nTotal findings: {len(findings)} in {scanned_files} file(s).")
-        if truncated_any:
-            print("Stopped early after reaching max findings limit.")
+        if args.paths:
+            paths = normalize_paths(args.paths)
+        else:
+            paths = [Path(path) for path in get_changed_files(args.base_ref, args.head_ref)]
+
+        findings = []
+        scanned_files = 0
+        truncated_any = False
+        for path in paths:
+            abs_path = (REPO_ROOT / path).resolve() if not path.is_absolute() else path
+            if not abs_path.exists() or abs_path.is_dir():
+                continue
+            rel_path = abs_path.relative_to(REPO_ROOT)
+            if should_skip_file(rel_path, config, args.include_ignored, args.include_anonymized):
+                continue
+            if is_binary_file(abs_path):
+                continue
+            scanned_files += 1
+            new_findings, truncated = scan_file(
+                abs_path,
+                rel_path,
+                patterns,
+                known_ids,
+                anonymized_prefix,
+                account_id_allowlist,
+                allowlist,
+                max_findings=args.max_findings,
+                current_count=len(findings),
+            )
+            findings.extend(new_findings)
+            if truncated:
+                truncated_any = True
+                break
+
+        if findings:
+            print("SENSITIVE DATA DETECTED")
+            print(format_findings(findings))
+            print()
+            print(format_findings_summary(findings))
+            print(f"\nTotal findings: {len(findings)} in {scanned_files} file(s).")
+            if truncated_any:
+                print("Stopped early after reaching max findings limit.")
+            if args.report_file:
+                write_report(Path(args.report_file), findings, scanned_files, truncated_any)
+                print(f"Report written to: {args.report_file}")
+            return 1
+
         if args.report_file:
             write_report(Path(args.report_file), findings, scanned_files, truncated_any)
+        print(f"No sensitive data findings in {scanned_files} file(s).")
+        return 0
+    except Exception as exc:
+        error_message = f"{exc.__class__.__name__}: {exc}"
+        print("SENSITIVE DATA SCAN FAILED", file=sys.stderr)
+        print(error_message, file=sys.stderr)
+        if args.report_file:
+            write_error_report(Path(args.report_file), error_message)
             print(f"Report written to: {args.report_file}")
-        return 1
-
-    if args.report_file:
-        write_report(Path(args.report_file), findings, scanned_files, truncated_any)
-    print(f"No sensitive data findings in {scanned_files} file(s).")
-    return 0
+        return 2
 
 
 if __name__ == "__main__":
