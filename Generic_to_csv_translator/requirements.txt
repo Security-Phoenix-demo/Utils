@@ -1,0 +1,22 @@
+# CSV Vulnerability Translator - Requirements
+# 
+# This tool uses only Python standard library modules.
+# No external packages are required!
+#
+# Minimum Python version: 3.6+
+# Recommended Python version: 3.8+
+#
+# Standard library modules used:
+# - csv (built-in)
+# - json (built-in)
+# - argparse (built-in)
+# - os (built-in)
+# - datetime (built-in)
+# - typing (built-in, Python 3.5+)
+# - re (built-in)
+#
+# To verify your Python version:
+#   python3 --version
+#
+# No pip install needed! Just run the script.
+

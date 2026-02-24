@@ -1,0 +1,30 @@
+{
+    "gates": [
+        {
+            "severity": "critical",
+            "threshold": 3,
+            "required": "must"
+        },
+        {
+            "severity": "high",
+            "threshold": 18,
+            "required": "optional"
+        },
+        {
+            "severity": "medium",
+            "threshold": 12,
+            "required": "optional"
+        },
+        {
+            "severity": "low",
+            "threshold": 0,
+            "required": "optional"
+        },
+        {
+            "severity": "none",
+            "threshold": 0,
+            "required": "optional"
+        }
+    ],
+    "pass_logic": "ALL"
+} 
