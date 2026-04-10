@@ -218,75 +218,63 @@ class EnhancedMultiScannerImportManager:
             # 12 major consolidations completed | 76+ → 42 translators
             
             # Container Scanners (5)
-            from scanner_translators import (
-                GrypeTranslator,
-                TrivyTranslator,              # Consolidated 2→1
-                AquaTranslator,
-                SysdigTranslator,
-                TrivyOperatorTranslator
-            )
+            from scanner_translators.grype_translator import GrypeTranslator
+            from scanner_translators.trivy_translator import TrivyTranslator  # Consolidated 2→1
+            from scanner_translators.aqua_translator import AquaTranslator
+            from scanner_translators.sysdig_translator import SysdigTranslator
+            from scanner_translators.trivy_operator_translator import TrivyOperatorTranslator
             
             # Build/SCA Scanners (11 - includes major consolidations)
-            from scanner_translators import (
-                NpmAuditTranslator,
-                PipAuditTranslator,
-                CycloneDXTranslator,          # Consolidated 2→1
-                DependencyCheckTranslator,
-                SnykCLITranslator,
-                NSPTranslator,
-                SnykIssueAPITranslator,
-                ORTTranslator,
-                VeracodeSCACSVTranslator,
-                JFrogXRayTranslator,          # Consolidated 5→1 🔥
-                BlackDuckTranslator,          # Consolidated 7→1 🔥
-                DSOPTranslator                # 🆕
-            )
+            from scanner_translators.npm_audit_translator import NpmAuditTranslator
+            from scanner_translators.pip_audit_translator import PipAuditTranslator
+            from scanner_translators.cyclonedx_translator import CycloneDXTranslator  # Consolidated 2→1
+            from scanner_translators.dependency_check_translator import DependencyCheckTranslator
+            from scanner_translators.snyk_cli_translator import SnykCLITranslator
+            from scanner_translators.nsp_translator import NSPTranslator
+            from scanner_translators.snyk_issue_api_translator import SnykIssueAPITranslator
+            from scanner_translators.ort_translator import ORTTranslator
+            from scanner_translators.veracode_sca_translator import VeracodeSCACSVTranslator
+            from scanner_translators.jfrog_xray_translator import JFrogXRayTranslator  # Consolidated 5→1 🔥
+            from scanner_translators.blackduck_translator import BlackDuckTranslator  # Consolidated 7→1 🔥
+            from scanner_translators.dsop_translator import DSOPTranslator  # 🆕
             
             # Cloud Scanners (5 - includes major consolidations)
-            from scanner_translators import (
-                ProwlerTranslator,            # Consolidated 4→1 🔥
-                AWSInspectorTranslator,
-                AzureSecurityCenterTranslator,
-                WizTranslator,                # Consolidated 2→1
-                ScoutSuiteTranslator
-            )
+            from scanner_translators.prowler_translator import ProwlerTranslator  # Consolidated 4→1 🔥
+            from scanner_translators.aws_inspector_translator import AWSInspectorTranslator
+            from scanner_translators.azure_security_center_translator import AzureSecurityCenterTranslator
+            from scanner_translators.wiz_translator import WizTranslator  # Consolidated 2→1
+            from scanner_translators.scout_suite_translator import ScoutSuiteTranslator
             
             # Code/Secret Scanners (8)
-            from scanner_translators import (
-                SonarQubeTranslator,          # Consolidated 2→1
-                GitLabSecretDetectionTranslator,
-                GitHubSecretScanningTranslator,
-                NoseyParkerTranslator,
-                SARIFTranslator,
-                CheckmarxTranslator,          # Consolidated 2→1 🆕
-                TruffleHogTranslator,         # Consolidated 2→1 (3 formats) 🆕
-                FortifyXMLTranslator,         # 🆕
-                KiuwanCSVTranslator           # 🆕
-            )
+            from scanner_translators.sonarqube_translator import SonarQubeTranslator  # Consolidated 2→1
+            from scanner_translators.gitlab_secret_detection_translator import GitLabSecretDetectionTranslator
+            from scanner_translators.github_secret_scanning_translator import GitHubSecretScanningTranslator
+            from scanner_translators.noseyparker_translator import NoseyParkerTranslator
+            from scanner_translators.sarif_translator import SARIFTranslator
+            from scanner_translators.checkmarx_translator import CheckmarxTranslator  # Consolidated 2→1 🆕
+            from scanner_translators.trufflehog_translator import TruffleHogTranslator  # Consolidated 2→1 (3 formats) 🆕
+            from scanner_translators.fortify_translator import FortifyXMLTranslator  # 🆕
+            from scanner_translators.kiuwan_translator import KiuwanCSVTranslator  # 🆕
             
             # Web Scanners (6)
-            from scanner_translators import (
-                TestSSLTranslator,
-                ContrastTranslator,
-                BurpTranslator,               # Consolidated 3→1 🆕
-                MicroFocusWebInspectTranslator, # 🆕
-                HackerOneCSVTranslator,       # 🆕
-                BugCrowdCSVTranslator,        # 🆕
-                SolarAppScreenerCSVTranslator # 🆕
-            )
+            from scanner_translators.testssl_translator import TestSSLTranslator
+            from scanner_translators.contrast_translator import ContrastTranslator
+            from scanner_translators.burp_translator import BurpTranslator  # Consolidated 3→1 🆕
+            from scanner_translators.microfocus_webinspect_translator import MicroFocusWebInspectTranslator  # 🆕
+            from scanner_translators.hackerone_translator import HackerOneCSVTranslator  # 🆕
+            from scanner_translators.bugcrowd_translator import BugCrowdCSVTranslator  # 🆕
+            from scanner_translators.solar_appscreener_translator import SolarAppScreenerCSVTranslator  # 🆕
             
             # Infrastructure Scanners (5)
-            from scanner_translators import (
-                QualysTranslator,             # Consolidated 4→1 🆕
-                TenableTranslator,            # Consolidated 2→1 🆕
-                KubeauditTranslator,          # 🆕
-                MSDefenderTranslator,         # 🆕
-                DSOPTranslator                # 🆕 (duplicate in Build for flexibility)
-            )
+            from scanner_translators.qualys_translator import QualysTranslator  # Consolidated 4→1 🆕
+            from scanner_translators.tenable_translator import TenableTranslator  # Consolidated 2→1 🆕
+            from scanner_translators.kubeaudit_translator import KubeauditTranslator  # 🆕
+            from scanner_translators.msdefender_translator import MSDefenderTranslator  # 🆕
+            from scanner_translators.dsop_translator import DSOPTranslator  # 🆕 (duplicate in Build for flexibility)
             
             # Additional Format Handlers
             try:
-                from scanner_translators import ChefInspecTranslator
+                from scanner_translators.chefinspec_translator import ChefInspecTranslator
                 chef_inspec_available = True
             except ImportError:
                 logger.warning("⚠️ ChefInspecTranslator not available - skipping")
