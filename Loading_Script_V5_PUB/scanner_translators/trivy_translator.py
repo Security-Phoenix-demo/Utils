@@ -100,7 +100,7 @@ class TrivyTranslator(ScannerTranslator):
         artifact_name = data.get('ArtifactName', '') or data.get('ArtifactPath', '')
         if not artifact_name:
             results = data.get('Results', [])
-            artifact_name = results[0].get('Target', '') if results else ''
+            artifact_name = results[0].get('Target', '') if results and isinstance(results[0], dict) else ''
         artifact_name = artifact_name or 'unknown'
         artifact_type = data.get('ArtifactType', 'CONTAINER')
 
