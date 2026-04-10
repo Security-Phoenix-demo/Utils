@@ -96,17 +96,21 @@ class TrivyTranslator(ScannerTranslator):
         """Parse new Trivy format: Results[] → Vulnerabilities[]"""
         assets = []
         
-        # Get artifact info
-        artifact_name = data.get('ArtifactName', data.get('ArtifactPath', 'unknown'))
+        # Get artifact info — fall back to first Result's Target when ArtifactName is empty
+        artifact_name = data.get('ArtifactName', '') or data.get('ArtifactPath', '')
+        if not artifact_name:
+            results = data.get('Results', [])
+            artifact_name = results[0].get('Target', '') if results else ''
+        artifact_name = artifact_name or 'unknown'
         artifact_type = data.get('ArtifactType', 'CONTAINER')
-        
+
         # Create asset
         asset_attributes = {
             'dockerfile': artifact_name if 'Dockerfile' not in artifact_name else 'Dockerfile',
             'origin': 'trivy',
             'repository': artifact_name
         }
-        
+
         asset = AssetData(
             asset_type="CONTAINER",
             attributes=asset_attributes,
@@ -155,7 +159,7 @@ class TrivyTranslator(ScannerTranslator):
                 'origin': 'trivy',
                 'repository': target
             }
-            
+
             asset = AssetData(
                 asset_type="CONTAINER",
                 attributes=asset_attributes,
@@ -258,13 +262,13 @@ class TrivyTranslator(ScannerTranslator):
         
         # Get CWE IDs
         cwe_ids = vuln_data.get('CweIDs', [])
-        
+
         # Create remedy
         if fixed_version:
             remedy = f"Update {pkg_name} from {installed_version} to {fixed_version}"
         else:
             remedy = "No fix available"
-        
+
         vulnerability = VulnerabilityData(
             name=vuln_id,
             description=vuln_data.get('Description', vuln_data.get('Title', 'No description available')),
