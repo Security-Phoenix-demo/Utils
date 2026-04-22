@@ -1,0 +1,55 @@
+# Azure Configuration Template
+# Copy this file to 'azure_config.ini' and fill in your credentials
+
+[default]
+# Azure Authentication Method: 'cli', 'service_principal', or 'managed_identity'
+auth_method = cli
+
+# --- Option 1: Azure CLI (Recommended for local development) ---
+# Uses credentials from 'az login'
+# No additional configuration needed
+
+# --- Option 2: Service Principal (Recommended for automation) ---
+# tenant_id = YOUR_TENANT_ID
+# client_id = YOUR_CLIENT_ID
+# client_secret = YOUR_CLIENT_SECRET
+
+# --- Option 3: Managed Identity (For Azure VMs/Services) ---
+# Uses system or user-assigned managed identity
+# client_id = YOUR_MANAGED_IDENTITY_CLIENT_ID (optional, for user-assigned)
+
+[subscriptions]
+# List of Azure subscriptions to scan
+# Format: subscription_name = subscription_id
+# Use 'all' to scan all accessible subscriptions
+# Examples:
+# production = 12345678-1234-1234-1234-123456789012
+# development = 87654321-4321-4321-4321-210987654321
+# Or simply:
+scan_mode = all
+
+[filters]
+# Resource groups to filter (comma-separated)
+# Leave empty to scan all resource groups
+resource_groups = 
+
+# Resource tags to filter (optional)
+# Format: key=value (comma-separated)
+# Example: Environment=production,CostCenter=IT
+resource_tags = 
+
+# Exclude specific resource types (comma-separated)
+# Example: Microsoft.Storage/storageAccounts,Microsoft.Compute/virtualMachines
+exclude_types = 
+
+# Include only specific locations (comma-separated)
+# Leave empty for all locations
+# Example: eastus,westus2,westeurope
+locations = 
+
+
+
+
+
+
+

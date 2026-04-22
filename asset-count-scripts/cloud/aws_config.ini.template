@@ -1,0 +1,54 @@
+# AWS Configuration Template
+# Copy this file to 'aws_config.ini' and fill in your credentials
+
+[default]
+# AWS Authentication Method: 'profile', 'keys', or 'role'
+auth_method = profile
+
+# --- Option 1: AWS Profile (Recommended for local development) ---
+# AWS CLI profile name from ~/.aws/credentials
+# aws_profile = default
+
+# --- Option 2: Access Keys (Not recommended for production) ---
+# aws_access_key_id = YOUR_ACCESS_KEY_ID
+# aws_secret_access_key = YOUR_SECRET_ACCESS_KEY
+
+# --- Option 3: IAM Role ARN (Recommended for cross-account) ---
+# role_arn = arn:aws:iam::123456789012:role/AssetReaderRole
+# external_id = optional-external-id
+
+# Default region (used for API calls)
+default_region = us-east-1
+
+[accounts]
+# List of AWS accounts to scan
+# Format: account_name = account_id or profile_name or role_arn
+# Examples:
+# production = 123456789012
+# development = dev-profile
+# staging = arn:aws:iam::987654321098:role/AssetReaderRole
+
+[regions]
+# Regions to scan (comma-separated)
+# Use 'all' to scan all enabled regions
+# Use specific regions for faster scans: us-east-1,us-west-2,eu-west-1
+scan_regions = all
+
+[filters]
+# Resource tags to filter (optional)
+# Only resources with these tags will be counted
+# Format: key=value (comma-separated for multiple)
+# Example: Environment=production,Team=platform
+# Leave empty to scan all resources
+resource_tags = 
+
+# Exclude specific resource types (comma-separated)
+# Example: AWS::S3::Bucket,AWS::Lambda::Function
+exclude_types = 
+
+
+
+
+
+
+

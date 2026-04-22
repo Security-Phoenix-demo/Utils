@@ -1,0 +1,7 @@
+[wiz]
+# Wiz API Credentials
+# Copy this file to wiz_config.ini and add your credentials
+
+client_id = client-id #cange CLient id
+client_secret = #change client secret  
+

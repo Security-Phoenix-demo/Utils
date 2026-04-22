@@ -1,0 +1,15 @@
+# GitHub Repository Analyzer - Dependencies
+# Install with: pip install -r requirements.txt
+
+# GitHub API client
+requests>=2.31.0
+
+# Git operations and blame analysis
+GitPython>=3.1.40
+
+
+
+
+
+
+

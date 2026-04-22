@@ -1,0 +1,318 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "servicePrincipalName": {
+      "type": "string",
+      "defaultValue": "AssetCounterSP",
+      "metadata": {
+        "description": "Name for the service principal"
+      }
+    },
+    "roleAssignmentScope": {
+      "type": "string",
+      "defaultValue": "[subscription().id]",
+      "metadata": {
+        "description": "Scope for role assignment (subscription, resource group, or resource)"
+      }
+    }
+  },
+  "variables": {
+    "readerRoleDefinitionId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]",
+    "customRoleDefinitionName": "AssetCounterCustomRole"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Authorization/roleDefinitions",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(subscription().id, 'AssetCounterRole')]",
+      "properties": {
+        "roleName": "[variables('customRoleDefinitionName')]",
+        "description": "Custom role for Azure Asset Counter with read-only permissions",
+        "type": "CustomRole",
+        "permissions": [
+          {
+            "actions": [
+              "*/read",
+              "Microsoft.Resources/subscriptions/read",
+              "Microsoft.Resources/subscriptions/resourceGroups/read",
+              "Microsoft.Resources/resources/read",
+              "Microsoft.ResourceGraph/resources/read",
+              "Microsoft.ResourceGraph/queries/read"
+            ],
+            "notActions": [],
+            "dataActions": [],
+            "notDataActions": []
+          }
+        ],
+        "assignableScopes": [
+          "[subscription().id]"
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "customRoleDefinitionId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Authorization/roleDefinitions', guid(subscription().id, 'AssetCounterRole'))]"
+    },
+    "readerRoleDefinitionId": {
+      "type": "string",
+      "value": "[variables('readerRoleDefinitionId')]"
+    },
+    "deploymentInstructions": {
+      "type": "string",
+      "value": "ARM template deployed. Now create service principal using Azure CLI commands in the comments below."
+    }
+  }
+}
+
+/*
+===================================================================================
+Azure Service Principal Creation Guide
+===================================================================================
+
+METHOD 1: Using Azure CLI (Recommended)
+---------------------------------------
+
+Step 1: Create Service Principal with Reader Role
+--------------------------------------------------
+az ad sp create-for-rbac \
+  --name "AssetCounterSP" \
+  --role "Reader" \
+  --scopes /subscriptions/{subscription-id}
+
+Output will provide:
+{
+  "appId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "displayName": "AssetCounterSP",
+  "password": "your-client-secret",
+  "tenant": "tttttttt-tttt-tttt-tttt-tttttttttttt"
+}
+
+Step 2: Store Credentials Securely
+-----------------------------------
+# Add to azure_config.ini:
+[default]
+auth_method = service_principal
+tenant_id = tttttttt-tttt-tttt-tttt-tttttttttttt
+client_id = aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+client_secret = your-client-secret
+
+
+Step 3: Test Service Principal
+-------------------------------
+az login --service-principal \
+  --username aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee \
+  --password your-client-secret \
+  --tenant tttttttt-tttt-tttt-tttt-tttttttttttt
+
+az account show
+
+
+METHOD 2: Using Azure Portal
+-----------------------------
+
+Step 1: Register Application
+-----------------------------
+1. Go to Azure Portal > Azure Active Directory
+2. Select "App registrations" > "New registration"
+3. Name: "AssetCounterSP"
+4. Click "Register"
+5. Note down:
+   - Application (client) ID
+   - Directory (tenant) ID
+
+Step 2: Create Client Secret
+-----------------------------
+1. In the app registration, go to "Certificates & secrets"
+2. Click "New client secret"
+3. Description: "AssetCounter"
+4. Expiration: Choose duration (recommended: 12-24 months)
+5. Click "Add"
+6. Copy the secret value immediately (won't be shown again)
+
+Step 3: Assign Reader Role
+---------------------------
+1. Go to Subscriptions > Your Subscription
+2. Click "Access control (IAM)"
+3. Click "Add role assignment"
+4. Role: "Reader"
+5. Assign access to: "User, group, or service principal"
+6. Select: "AssetCounterSP"
+7. Click "Save"
+
+Step 4: Verify Permissions
+---------------------------
+1. Go to Subscriptions > Your Subscription > "Access control (IAM)"
+2. Click "View" under "View access to this resource"
+3. Search for "AssetCounterSP"
+4. Verify "Reader" role is assigned
+
+
+METHOD 3: Using PowerShell
+---------------------------
+
+Step 1: Create Service Principal
+---------------------------------
+$sp = New-AzADServicePrincipal -DisplayName "AssetCounterSP" -Role "Reader" -Scope "/subscriptions/{subscription-id}"
+
+$sp | Format-List
+
+# Get credentials
+$BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sp.Secret)
+$clientSecret = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+
+Write-Host "Tenant ID: $((Get-AzContext).Tenant.Id)"
+Write-Host "Client ID: $($sp.ApplicationId)"
+Write-Host "Client Secret: $clientSecret"
+
+Step 2: Test Service Principal
+-------------------------------
+$securePassword = ConvertTo-SecureString $clientSecret -AsPlainText -Force
+$credential = New-Object System.Management.Automation.PSCredential ($sp.ApplicationId, $securePassword)
+Connect-AzAccount -ServicePrincipal -Credential $credential -Tenant (Get-AzContext).Tenant.Id
+
+
+ADDITIONAL CONFIGURATIONS
+==========================
+
+Grant Access to Multiple Subscriptions
+---------------------------------------
+# For each subscription:
+az role assignment create \
+  --assignee {service-principal-app-id} \
+  --role "Reader" \
+  --scope /subscriptions/{subscription-id}
+
+
+Grant Resource Graph Permissions
+---------------------------------
+az role assignment create \
+  --assignee {service-principal-app-id} \
+  --role "Reader" \
+  --scope /subscriptions/{subscription-id}
+
+# Resource Graph is included in Reader role by default
+
+
+Grant Access to Specific Resource Groups Only
+----------------------------------------------
+az role assignment create \
+  --assignee {service-principal-app-id} \
+  --role "Reader" \
+  --resource-group {resource-group-name}
+
+
+View Current Role Assignments
+------------------------------
+az role assignment list \
+  --assignee {service-principal-app-id} \
+  --output table
+
+
+Rotate Client Secret
+--------------------
+# Create new secret
+az ad sp credential reset \
+  --id {service-principal-app-id} \
+  --append
+
+# Or replace all secrets
+az ad sp credential reset \
+  --id {service-principal-app-id}
+
+
+Delete Service Principal (Cleanup)
+-----------------------------------
+az ad sp delete --id {service-principal-app-id}
+
+
+SECURITY BEST PRACTICES
+========================
+
+1. Use Certificate Authentication (More Secure)
+   --------------------------------------------
+   # Create certificate
+   $cert = New-SelfSignedCertificate -CertStoreLocation "cert:\CurrentUser\My" \
+     -Subject "CN=AssetCounterSP" -KeySpec KeyExchange
+   
+   # Export certificate
+   Export-Certificate -Cert $cert -FilePath "AssetCounterSP.cer"
+   
+   # Upload to Azure AD
+   az ad sp credential reset --id {app-id} --cert @AssetCounterSP.cer
+
+2. Limit Scope to Necessary Subscriptions/Resource Groups
+
+3. Set Secret Expiration (12-24 months maximum)
+
+4. Monitor Service Principal Activity
+   az monitor activity-log list --caller {app-id}
+
+5. Implement Secret Rotation Policy
+
+6. Store Secrets in Azure Key Vault (for automation scenarios)
+
+7. Use Managed Identity When Possible (for Azure-hosted applications)
+
+
+TROUBLESHOOTING
+===============
+
+Error: "Insufficient privileges to complete the operation"
+---------------------------------------------------------
+Solution: You need "Owner" or "User Access Administrator" role to create 
+service principals and assign roles.
+
+Error: "The client does not have authorization to perform action"
+-----------------------------------------------------------------
+Solution: Service principal needs time to propagate (wait 5-10 minutes) or 
+verify role assignment is correct.
+
+Error: "AADSTS700016: Application not found in directory"
+----------------------------------------------------------
+Solution: Wrong tenant ID or application ID. Verify credentials.
+
+
+USAGE EXAMPLES
+==============
+
+Using with Asset Counter Script:
+--------------------------------
+python azure-asset-counter.py
+
+Configuration in azure_config.ini:
+[default]
+auth_method = service_principal
+tenant_id = your-tenant-id
+client_id = your-client-id
+client_secret = your-client-secret
+
+[subscriptions]
+scan_mode = all
+
+
+Testing the Configuration:
+--------------------------
+# Test Azure login
+az login --service-principal \
+  --username {client-id} \
+  --password {client-secret} \
+  --tenant {tenant-id}
+
+# List accessible subscriptions
+az account list --output table
+
+# Test Resource Graph query
+az graph query -q "Resources | summarize count() by type"
+
+===================================================================================
+*/
+
+
+
+
+
+
+

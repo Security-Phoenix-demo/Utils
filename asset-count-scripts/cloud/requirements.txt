@@ -1,0 +1,37 @@
+# Cloud Asset Counter - Python Dependencies
+
+# AWS
+boto3>=1.34.0
+botocore>=1.34.0
+
+# Azure
+azure-identity>=1.16.1  # SECURITY: Fix CVE-2024-35255 (Elevation of Privilege)
+azure-mgmt-resource>=23.0.0
+azure-mgmt-resourcegraph>=8.0.0
+azure-mgmt-compute>=30.0.0
+azure-mgmt-storage>=21.0.0
+azure-mgmt-sql>=4.0.0
+azure-mgmt-containerservice>=27.0.0
+azure-mgmt-network>=25.0.0
+
+# GCP
+google-cloud-asset>=3.19.0
+google-cloud-resource-manager>=1.11.0
+google-auth>=2.27.0
+
+# Common utilities
+requests>=2.32.4  # SECURITY: Fix CVE-2024-47081 (.netrc credentials leak)
+python-dateutil>=2.8.0
+
+# Data handling
+pandas>=2.0.0
+
+# Configuration
+configparser>=6.0.0
+
+
+
+
+
+
+

@@ -1,0 +1,293 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Role and Policy for AWS Asset Counter - Read-Only Access'
+
+Parameters:
+  RoleName:
+    Type: String
+    Default: AssetCounterReadOnlyRole
+    Description: Name for the IAM role
+  
+  TrustedAccountId:
+    Type: String
+    Default: ''
+    Description: (Optional) AWS Account ID that can assume this role for cross-account access. Leave empty for same-account use.
+  
+  ExternalId:
+    Type: String
+    Default: ''
+    Description: (Optional) External ID for role assumption security. Recommended for cross-account access.
+
+Conditions:
+  HasTrustedAccount: !Not [!Equals [!Ref TrustedAccountId, '']]
+  HasExternalId: !Not [!Equals [!Ref ExternalId, '']]
+  HasCrossAccountAccess: !And
+    - !Condition HasTrustedAccount
+    - !Condition HasExternalId
+
+Resources:
+  AssetCounterPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${RoleName}Policy'
+      Description: Read-only policy for AWS Asset Counter
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Identity and Account Information
+          - Sid: AllowGetAccountInfo
+            Effect: Allow
+            Action:
+              - sts:GetCallerIdentity
+              - iam:ListAccountAliases
+            Resource: '*'
+          
+          # EC2 Resources
+          - Sid: AllowEC2ReadOnly
+            Effect: Allow
+            Action:
+              - ec2:Describe*
+              - ec2:GetConsoleOutput
+              - ec2:GetConsoleScreenshot
+            Resource: '*'
+          
+          # S3 Resources
+          - Sid: AllowS3ReadOnly
+            Effect: Allow
+            Action:
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+              - s3:GetBucketVersioning
+              - s3:GetBucketAcl
+              - s3:GetBucketPolicy
+              - s3:GetBucketTagging
+            Resource: '*'
+          
+          # RDS Resources
+          - Sid: AllowRDSReadOnly
+            Effect: Allow
+            Action:
+              - rds:Describe*
+              - rds:ListTagsForResource
+            Resource: '*'
+          
+          # Lambda Resources
+          - Sid: AllowLambdaReadOnly
+            Effect: Allow
+            Action:
+              - lambda:List*
+              - lambda:Get*
+            Resource: '*'
+          
+          # ECS/EKS Resources
+          - Sid: AllowContainerReadOnly
+            Effect: Allow
+            Action:
+              - ecs:List*
+              - ecs:Describe*
+              - eks:List*
+              - eks:Describe*
+              - ecr:Describe*
+              - ecr:List*
+              - ecr:GetRepositoryPolicy
+            Resource: '*'
+          
+          # IAM Resources
+          - Sid: AllowIAMReadOnly
+            Effect: Allow
+            Action:
+              - iam:List*
+              - iam:Get*
+            Resource: '*'
+          
+          # Secrets and Keys
+          - Sid: AllowSecretsReadOnly
+            Effect: Allow
+            Action:
+              - secretsmanager:ListSecrets
+              - secretsmanager:DescribeSecret
+              - kms:ListKeys
+              - kms:ListAliases
+              - kms:DescribeKey
+            Resource: '*'
+          
+          # Monitoring and Logs
+          - Sid: AllowMonitoringReadOnly
+            Effect: Allow
+            Action:
+              - cloudwatch:Describe*
+              - cloudwatch:List*
+              - cloudwatch:Get*
+              - logs:DescribeLogGroups
+            Resource: '*'
+          
+          # Load Balancers
+          - Sid: AllowLoadBalancerReadOnly
+            Effect: Allow
+            Action:
+              - elasticloadbalancing:Describe*
+            Resource: '*'
+          
+          # DNS and Networking
+          - Sid: AllowDNSReadOnly
+            Effect: Allow
+            Action:
+              - route53:List*
+              - route53:Get*
+            Resource: '*'
+          
+          # Databases
+          - Sid: AllowDatabaseReadOnly
+            Effect: Allow
+            Action:
+              - dynamodb:ListTables
+              - dynamodb:DescribeTable
+              - dynamodb:ListTagsOfResource
+              - elasticache:Describe*
+              - redshift:Describe*
+            Resource: '*'
+          
+          # Messaging
+          - Sid: AllowMessagingReadOnly
+            Effect: Allow
+            Action:
+              - sns:ListTopics
+              - sns:GetTopicAttributes
+              - sns:ListTagsForResource
+              - sqs:ListQueues
+              - sqs:GetQueueAttributes
+              - sqs:ListQueueTags
+            Resource: '*'
+          
+          # API Gateway
+          - Sid: AllowAPIGatewayReadOnly
+            Effect: Allow
+            Action:
+              - apigateway:GET
+            Resource: '*'
+          
+          # CloudFront
+          - Sid: AllowCloudFrontReadOnly
+            Effect: Allow
+            Action:
+              - cloudfront:List*
+              - cloudfront:Get*
+            Resource: '*'
+          
+          # Additional Services
+          - Sid: AllowAdditionalServicesReadOnly
+            Effect: Allow
+            Action:
+              - backup:List*
+              - backup:Describe*
+              - autoscaling:Describe*
+              - elasticbeanstalk:Describe*
+              - cloudformation:Describe*
+              - cloudformation:List*
+            Resource: '*'
+
+  AssetCounterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: Role for AWS Asset Counter with read-only permissions
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !If
+                - HasTrustedAccount
+                - !Sub 'arn:aws:iam::${TrustedAccountId}:root'
+                - !Ref AWS::AccountId
+            Action: 'sts:AssumeRole'
+            Condition: !If
+              - HasExternalId
+              - StringEquals:
+                  'sts:ExternalId': !Ref ExternalId
+              - !Ref AWS::NoValue
+      ManagedPolicyArns:
+        - !Ref AssetCounterPolicy
+        - arn:aws:iam::aws:policy/ReadOnlyAccess  # AWS managed read-only policy as baseline
+      MaxSessionDuration: 3600  # 1 hour
+
+Outputs:
+  RoleArn:
+    Description: ARN of the created IAM role
+    Value: !GetAtt AssetCounterRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-RoleArn'
+  
+  PolicyArn:
+    Description: ARN of the created IAM policy
+    Value: !Ref AssetCounterPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-PolicyArn'
+  
+  RoleName:
+    Description: Name of the created IAM role
+    Value: !Ref RoleName
+    Export:
+      Name: !Sub '${AWS::StackName}-RoleName'
+  
+  UsageInstructions:
+    Description: How to use this role
+    Value: !If
+      - HasCrossAccountAccess
+      - !Sub |
+          Cross-account role created successfully!
+          
+          To use this role, add to your aws_config.ini:
+          [accounts]
+          account_name = ${AssetCounterRole.Arn}
+          
+          Or use command line:
+          python aws-asset-counter.py --profile role-profile
+      - !Sub |
+          Same-account role created successfully!
+          
+          To use this role, create an AWS CLI profile that assumes it:
+          
+          aws configure set role_arn ${AssetCounterRole.Arn} --profile asset-counter
+          aws configure set source_profile default --profile asset-counter
+          
+          Then use:
+          python aws-asset-counter.py --profile asset-counter
+
+---
+# Deployment Instructions
+#
+# 1. Deploy the stack:
+#    aws cloudformation create-stack \
+#      --stack-name AssetCounterRole \
+#      --template-body file://aws-iam-policy.yaml \
+#      --parameters ParameterKey=RoleName,ParameterValue=AssetCounterReadOnlyRole \
+#      --capabilities CAPABILITY_NAMED_IAM
+#
+# 2. For cross-account access:
+#    aws cloudformation create-stack \
+#      --stack-name AssetCounterRole \
+#      --template-body file://aws-iam-policy.yaml \
+#      --parameters \
+#        ParameterKey=RoleName,ParameterValue=AssetCounterReadOnlyRole \
+#        ParameterKey=TrustedAccountId,ParameterValue=123456789012 \
+#        ParameterKey=ExternalId,ParameterValue=my-secure-external-id \
+#      --capabilities CAPABILITY_NAMED_IAM
+#
+# 3. Check deployment status:
+#    aws cloudformation describe-stacks --stack-name AssetCounterRole
+#
+# 4. Get role ARN:
+#    aws cloudformation describe-stacks \
+#      --stack-name AssetCounterRole \
+#      --query 'Stacks[0].Outputs[?OutputKey==`RoleArn`].OutputValue' \
+#      --output text
+#
+# 5. Delete the stack (if needed):
+#    aws cloudformation delete-stack --stack-name AssetCounterRole
+
+
+
+
+
+
+

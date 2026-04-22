@@ -1,0 +1,12 @@
+[github]
+# Your GitHub Personal Access Token
+# Create one at: https://github.com/settings/tokens
+# Required scopes: repo (for private repos) or public_repo (for public repos only)
+token = your_github_token_here
+
+
+
+
+
+
+

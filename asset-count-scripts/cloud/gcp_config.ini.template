@@ -1,0 +1,63 @@
+# GCP Configuration Template
+# Copy this file to 'gcp_config.ini' and fill in your credentials
+
+[default]
+# GCP Authentication Method: 'adc', 'service_account', or 'user'
+auth_method = adc
+
+# --- Option 1: Application Default Credentials (Recommended) ---
+# Uses credentials from 'gcloud auth application-default login'
+# No additional configuration needed
+
+# --- Option 2: Service Account Key File (Recommended for automation) ---
+# service_account_file = /path/to/service-account-key.json
+
+# --- Option 3: Service Account JSON (Inline) ---
+# Not recommended - use file instead
+# service_account_json = {"type": "service_account", ...}
+
+[projects]
+# List of GCP projects to scan
+# Format: project_name = project_id
+# Use 'all' to scan all accessible projects
+# Examples:
+# production = my-prod-project-123456
+# development = my-dev-project-789012
+# Or simply:
+scan_mode = all
+
+[filters]
+# Asset types to include (comma-separated)
+# Leave empty to scan all asset types
+# Example: compute.googleapis.com/Instance,storage.googleapis.com/Bucket
+include_types = 
+
+# Asset types to exclude (comma-separated)
+exclude_types = 
+
+# Labels to filter (optional)
+# Format: key=value (comma-separated)
+# Example: env=production,team=platform
+labels = 
+
+# Include only specific locations/regions (comma-separated)
+# Leave empty for all locations
+# Example: us-central1,us-east1,europe-west1
+locations = 
+
+[advanced]
+# Use Cloud Asset Inventory API (faster, requires cloudasset.assets.searchAllResources permission)
+use_asset_inventory = true
+
+# Fallback to service-specific APIs if Asset Inventory fails
+fallback_to_service_apis = true
+
+# Maximum results per API call (pagination)
+page_size = 500
+
+
+
+
+
+
+
