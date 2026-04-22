@@ -85,6 +85,7 @@ def process_scan_file(self, job_id: str) -> Dict[str, Any]:
     task_logger.info(f"🚀 Starting processing for job {job_id}")
 
     upload_file_path = None  # captured before try so finally can always access it
+    config_file = None  # captured before try so finally can always access it
 
     try:
         # Get job from database
@@ -152,10 +153,6 @@ def process_scan_file(self, job_id: str) -> Dict[str, Any]:
         
         # Update progress
         job_manager.update_job_progress(self.db, job_id, 90.0, "Finalizing import")
-        
-        # Clean up temp config
-        if os.path.exists(config_file):
-            os.unlink(config_file)
         
         # Process result
         if result.get('success'):
@@ -226,6 +223,12 @@ def process_scan_file(self, job_id: str) -> Dict[str, Any]:
 
     finally:
         delete_upload_file(upload_file_path)
+        if config_file and os.path.exists(config_file):
+            try:
+                os.unlink(config_file)
+                task_logger.info(f"Deleted temporary config: {config_file}")
+            except OSError as e:
+                task_logger.warning(f"Could not delete temporary config {config_file}: {e}")
 
 
 def _create_temp_config(job, logger) -> str:
