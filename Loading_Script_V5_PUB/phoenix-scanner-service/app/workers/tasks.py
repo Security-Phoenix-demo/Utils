@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.models.database import SessionLocal
 from app.models.schemas import JobStatus
 from app.services.job_manager import job_manager
+from app.file_cleanup import delete_upload_file
 
 logger = logging.getLogger(__name__)
 
@@ -82,12 +83,16 @@ def process_scan_file(self, job_id: str) -> Dict[str, Any]:
     """
     task_logger = logging.getLogger(f"task.{job_id}")
     task_logger.info(f"🚀 Starting processing for job {job_id}")
-    
+
+    upload_file_path = None  # captured before try so finally can always access it
+
     try:
         # Get job from database
         job = job_manager.get_job(self.db, job_id)
         if not job:
             raise ValueError(f"Job {job_id} not found")
+
+        upload_file_path = job.file_path
         
         # Update job status to processing
         job_manager.update_job_status(
@@ -218,6 +223,9 @@ def process_scan_file(self, job_id: str) -> Dict[str, Any]:
             _send_webhook_notification(job, {'success': False, 'error': str(e)}, task_logger)
         
         raise
+
+    finally:
+        delete_upload_file(upload_file_path)
 
 
 def _create_temp_config(job, logger) -> str:
