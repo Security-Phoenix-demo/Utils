@@ -21,9 +21,10 @@ import configparser
 import subprocess
 import tempfile
 import shutil
+import fnmatch
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Set, Optional
+from typing import List, Dict, Set, Optional, Tuple
 from collections import defaultdict
 
 try:
@@ -199,6 +200,29 @@ class BuildFileAnalyzer:
         self.config = config
         self.temp_dir = tempfile.mkdtemp(prefix='github_analyzer_')
         print(f"📁 Created temporary directory: {self.temp_dir}")
+        self.exclude_dirs = {
+            '.git', '.github', '__pycache__', 'node_modules', 'vendor', 'venv', '.venv',
+            '.tox', 'dist', 'build', '.idea', '.vscode', '.pytest_cache', '.mypy_cache'
+        }
+        self.binary_extensions = {
+            '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.svg', '.webp',
+            '.pdf', '.zip', '.gz', '.tar', '.7z', '.rar', '.jar', '.war',
+            '.exe', '.dll', '.so', '.dylib', '.bin', '.lockb', '.woff', '.woff2', '.ttf'
+        }
+        self.text_extensions = {
+            '.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.kt', '.kts', '.scala', '.groovy',
+            '.c', '.cc', '.cpp', '.h', '.hpp', '.cs', '.go', '.rs', '.rb', '.php', '.swift',
+            '.m', '.mm', '.sh', '.bash', '.zsh', '.ps1',
+            '.yaml', '.yml', '.json', '.toml', '.ini', '.cfg', '.conf', '.xml', '.properties',
+            '.sql', '.tf', '.tfvars', '.md', '.rst', '.txt', '.env'
+        }
+        self.text_filenames = {
+            'Dockerfile', 'Makefile', 'Rakefile', 'Gemfile', 'Pipfile', 'Vagrantfile',
+            'Jenkinsfile', 'requirements.txt', 'package.json', 'pom.xml', 'go.mod', 'Cargo.toml'
+        }
+        self.license_file_names = {
+            'LICENSE', 'LICENSE.txt', 'LICENSE.md', 'COPYING', 'COPYING.txt', 'COPYRIGHT'
+        }
     
     def __del__(self):
         """Cleanup temporary directory"""
@@ -219,6 +243,12 @@ class BuildFileAnalyzer:
             'private': repo_info.get('private', False),
             'build_files': [],
             'build_file_count': 0,
+            'total_files': 0,
+            'lines_of_code': 0,
+            'detected_technologies': [],
+            'is_monorepo': False,
+            'license_file_count': 0,
+            'scaled_file_count': 0.0,
             'contributors': set(),
             'error': None
         }
@@ -234,6 +264,15 @@ class BuildFileAnalyzer:
             build_files = self._find_build_files(repo_path)
             result['build_files'] = build_files
             result['build_file_count'] = len(build_files)
+            result['detected_technologies'] = self._detect_technologies(build_files, repo_info.get('language', 'Unknown'))
+
+            # Count files and lines of code
+            total_files, lines_of_code = self._collect_repo_metrics(repo_path)
+            result['total_files'] = total_files
+            result['lines_of_code'] = lines_of_code
+
+            # Count license-related files
+            result['license_file_count'] = self._count_license_files(repo_path)
             
             # Analyze contributors for each build file
             if build_files:
@@ -267,26 +306,89 @@ class BuildFileAnalyzer:
     def _find_build_files(self, repo_path: str) -> List[str]:
         """Find all build files in the repository"""
         build_files = []
-        repo_root = Path(repo_path)
-        
-        # Define specific build file names (exact match)
-        exact_match_files = set()
+        all_patterns = []
         for patterns in Config.BUILD_FILE_PATTERNS.values():
-            for pattern in patterns:
-                if '*' not in pattern:  # Not a glob pattern
-                    exact_match_files.add(pattern)
-        
+            all_patterns.extend(patterns)
+
         # Walk through repository
         for root, dirs, files in os.walk(repo_path):
             # Skip hidden directories and common exclude patterns
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', 'vendor', 'venv', '__pycache__']]
+            dirs[:] = [d for d in dirs if d not in self.exclude_dirs and not d.startswith('.cache')]
             
             for file in files:
-                if file in exact_match_files:
+                if any(fnmatch.fnmatch(file, pattern) for pattern in all_patterns):
                     rel_path = os.path.relpath(os.path.join(root, file), repo_path)
                     build_files.append(rel_path)
         
         return sorted(build_files)
+
+    def _detect_technologies(self, build_files: List[str], primary_language: str) -> List[str]:
+        """Infer technologies from detected build files"""
+        detected = set()
+        for build_file in build_files:
+            file_name = os.path.basename(build_file)
+            for tech, patterns in Config.BUILD_FILE_PATTERNS.items():
+                if any(fnmatch.fnmatch(file_name, pattern) for pattern in patterns):
+                    detected.add(tech)
+
+        if primary_language and primary_language != 'Unknown':
+            detected.add(primary_language.lower().replace(' ', '_'))
+
+        if not detected:
+            detected.add('unknown')
+
+        return sorted(detected)
+
+    def _should_count_as_text(self, file_name: str) -> bool:
+        """Fast text-file heuristic for LOC counting."""
+        if file_name in self.text_filenames:
+            return True
+        suffix = Path(file_name).suffix.lower()
+        if suffix in self.binary_extensions:
+            return False
+        if suffix in self.text_extensions:
+            return True
+        # Fall back to excluding unknown extensions from LOC to avoid binary noise.
+        return False
+
+    def _collect_repo_metrics(self, repo_path: str) -> Tuple[int, int]:
+        """Count total files and approximate LOC for textual files."""
+        total_files = 0
+        lines_of_code = 0
+
+        for root, dirs, files in os.walk(repo_path):
+            dirs[:] = [d for d in dirs if d not in self.exclude_dirs and not d.startswith('.cache')]
+
+            for file_name in files:
+                total_files += 1
+                if not self._should_count_as_text(file_name):
+                    continue
+
+                file_path = os.path.join(root, file_name)
+                try:
+                    with open(file_path, 'rb') as f:
+                        chunk = f.read(1024 * 1024 * 2)  # 2MB sanity check
+                        if b'\x00' in chunk:
+                            continue
+                        line_count = chunk.count(b'\n')
+                        for next_chunk in iter(lambda: f.read(1024 * 1024 * 2), b''):
+                            line_count += next_chunk.count(b'\n')
+                        lines_of_code += line_count
+                except Exception:
+                    # Ignore unreadable files to keep the scan resilient.
+                    continue
+
+        return total_files, lines_of_code
+
+    def _count_license_files(self, repo_path: str) -> int:
+        """Count license-related files in a repository."""
+        count = 0
+        for root, dirs, files in os.walk(repo_path):
+            dirs[:] = [d for d in dirs if d not in self.exclude_dirs and not d.startswith('.cache')]
+            for file_name in files:
+                if file_name in self.license_file_names:
+                    count += 1
+        return count
     
     def _analyze_contributors(self, repo_path: str, build_files: List[str]) -> Set[str]:
         """Analyze contributors who touched build files using git blame"""
@@ -338,11 +440,11 @@ class ReportGenerator:
         self.output_dir = Path(output_dir)
         self.timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    def generate_reports(self, results: List[Dict], user_info: Dict):
+    def generate_reports(self, results: List[Dict], user_info: Dict, include_monorepo: bool = False):
         """Generate all report formats"""
         
         # Calculate summary statistics
-        summary = self._calculate_summary(results)
+        summary = self._calculate_summary(results, include_monorepo=include_monorepo)
         
         # Print console report
         self._print_console_report(results, summary, user_info)
@@ -351,18 +453,21 @@ class ReportGenerator:
         json_file = self._generate_json_report(results, summary, user_info)
         
         # Generate CSV reports
-        csv_file, contributors_file = self._generate_csv_reports(results, summary)
+        csv_file, contributors_file, detailed_file = self._generate_csv_reports(results, summary)
         
         return {
             'json': json_file,
             'csv': csv_file,
-            'contributors_csv': contributors_file
+            'contributors_csv': contributors_file,
+            'detailed_csv': detailed_file
         }
     
-    def _calculate_summary(self, results: List[Dict]) -> Dict:
+    def _calculate_summary(self, results: List[Dict], include_monorepo: bool) -> Dict:
         """Calculate summary statistics"""
         total_repos = len(results)
         total_build_files = sum(r['build_file_count'] for r in results)
+        total_files = sum(r.get('total_files', 0) for r in results)
+        total_loc = sum(r.get('lines_of_code', 0) for r in results)
         
         all_contributors = set()
         for result in results:
@@ -370,22 +475,62 @@ class ReportGenerator:
         
         repos_with_build_files = sum(1 for r in results if r['build_file_count'] > 0)
         repos_with_errors = sum(1 for r in results if r['error'] is not None)
+        monorepo_repos = sum(1 for r in results if r.get('is_monorepo'))
+        monorepo_license_files = sum(
+            r.get('license_file_count', 0) for r in results if r.get('is_monorepo')
+        )
+        scaled_total = sum(
+            r.get('scaled_file_count', 0.0)
+            for r in results
+            if include_monorepo or not r.get('is_monorepo')
+        )
         
         # Language distribution
         languages = defaultdict(int)
         for result in results:
             lang = result.get('language', 'Unknown')
             languages[lang] += 1
+
+        technology_distribution = defaultdict(int)
+        for result in results:
+            for tech in result.get('detected_technologies', []):
+                technology_distribution[tech] += 1
+
+        file_counts = [r.get('total_files', 0) for r in results]
+        loc_counts = [r.get('lines_of_code', 0) for r in results]
+        suggested_file_threshold = self._percentile(file_counts, 90)
+        suggested_loc_threshold = self._percentile(loc_counts, 90)
         
         return {
             'total_repositories': total_repos,
+            'monorepo_repositories': monorepo_repos,
             'total_build_files': total_build_files,
+            'total_files': total_files,
+            'total_lines_of_code': total_loc,
             'unique_contributors': len(all_contributors),
             'repos_with_build_files': repos_with_build_files,
             'repos_with_errors': repos_with_errors,
+            'monorepo_license_file_count': monorepo_license_files,
+            'scaled_repository_count': round(scaled_total, 2),
+            'scaled_count_formula': 'total_files/100 for normal repos, total_files/1000 for monorepos',
+            'include_monorepo_in_scaled_count': include_monorepo,
+            'suggested_monorepo_file_threshold_p90': suggested_file_threshold,
+            'suggested_monorepo_loc_threshold_p90': suggested_loc_threshold,
             'language_distribution': dict(languages),
+            'technology_distribution': dict(technology_distribution),
             'all_contributors': sorted(all_contributors)
         }
+
+    def _percentile(self, values: List[int], percentile: int) -> int:
+        """Compute percentile without external dependencies."""
+        if not values:
+            return 0
+        sorted_values = sorted(values)
+        if len(sorted_values) == 1:
+            return sorted_values[0]
+        rank = int(round((percentile / 100) * (len(sorted_values) - 1)))
+        rank = max(0, min(rank, len(sorted_values) - 1))
+        return sorted_values[rank]
     
     def _print_console_report(self, results: List[Dict], summary: Dict, user_info: Dict):
         """Print formatted report to console"""
@@ -400,10 +545,20 @@ class ReportGenerator:
         print("SUMMARY STATISTICS")
         print("="*80)
         print(f"📦 Total Repositories: {summary['total_repositories']}")
+        print(f"🏗️  Monorepo Repositories: {summary['monorepo_repositories']}")
+        print(f"🗂️  Total Files: {summary['total_files']}")
+        print(f"📏 Total Lines of Code: {summary['total_lines_of_code']}")
         print(f"📄 Total Build Files: {summary['total_build_files']}")
         print(f"👥 Unique Contributors: {summary['unique_contributors']}")
         print(f"✅ Repos with Build Files: {summary['repos_with_build_files']}")
         print(f"❌ Repos with Errors: {summary['repos_with_errors']}")
+        print(f"📈 Scaled Repository Count: {summary['scaled_repository_count']}")
+        print(f"📜 Monorepo License Files: {summary['monorepo_license_file_count']}")
+        print(
+            f"💡 Suggested Monorepo Thresholds (P90): "
+            f"files>{summary['suggested_monorepo_file_threshold_p90']}, "
+            f"loc>{summary['suggested_monorepo_loc_threshold_p90']}"
+        )
         
         print("\n📊 Language Distribution:")
         for lang, count in sorted(summary['language_distribution'].items(), key=lambda x: x[1], reverse=True)[:10]:
@@ -419,7 +574,12 @@ class ReportGenerator:
         for i, result in enumerate(sorted_results[:20], 1):  # Show top 20
             print(f"\n{i}. {result['name']}")
             print(f"   Language: {result['language']}")
+            print(f"   Monorepo: {'Yes' if result.get('is_monorepo') else 'No'}")
+            print(f"   Total Files: {result.get('total_files', 0)}")
+            print(f"   LOC: {result.get('lines_of_code', 0)}")
             print(f"   Build Files: {result['build_file_count']}")
+            print(f"   Technologies: {', '.join(result.get('detected_technologies', []))}")
+            print(f"   Scaled Count: {result.get('scaled_file_count', 0.0):.2f}")
             
             if result['build_files']:
                 print(f"   Files: {', '.join(result['build_files'][:5])}")
@@ -483,7 +643,8 @@ class ReportGenerator:
         with open(csv_file, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([
-                'Repository', 'URL', 'Language', 'Private', 
+                'Repository', 'URL', 'Language', 'Technologies', 'Private', 'Monorepo',
+                'Total Files', 'Lines Of Code', 'Scaled File Count',
                 'Build Files Count', 'Build Files', 'Contributors Count', 'Error'
             ])
             
@@ -492,7 +653,12 @@ class ReportGenerator:
                     result['name'],
                     result['url'],
                     result['language'],
+                    '; '.join(result.get('detected_technologies', [])),
                     result['private'],
+                    result.get('is_monorepo', False),
+                    result.get('total_files', 0),
+                    result.get('lines_of_code', 0),
+                    f"{result.get('scaled_file_count', 0.0):.2f}",
                     result['build_file_count'],
                     '; '.join(result['build_files']),
                     len(result['contributors']),
@@ -518,8 +684,29 @@ class ReportGenerator:
                 writer.writerow([email, len(repos), '; '.join(repos)])
         
         print(f"📄 Contributors CSV saved: {contributors_file}")
+
+        # Detailed CSV report for monorepo/build analytics
+        detailed_file = self.output_dir / f'github_repo_details_{self.timestamp}.csv'
+        with open(detailed_file, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'Repository', 'Lines Of Code', 'Total Files', 'Build Files', 'Technology',
+                'Monorepo', 'Monorepo License File Count'
+            ])
+            for result in results:
+                writer.writerow([
+                    result['name'],
+                    result.get('lines_of_code', 0),
+                    result.get('total_files', 0),
+                    result.get('build_file_count', 0),
+                    '; '.join(result.get('detected_technologies', [])),
+                    result.get('is_monorepo', False),
+                    result.get('license_file_count', 0) if result.get('is_monorepo') else 0
+                ])
+
+        print(f"📄 Detailed CSV saved: {detailed_file}")
         
-        return str(csv_file), str(contributors_file)
+        return str(csv_file), str(contributors_file), str(detailed_file)
 
 
 # ============================================================================
@@ -534,7 +721,15 @@ class GitHubAnalyzer:
         self.github_client = GitHubClient(config)
         self.build_analyzer = BuildFileAnalyzer(config)
     
-    def run(self, output_dir: str = '.', max_repos: Optional[int] = None):
+    def run(
+        self,
+        output_dir: str = '.',
+        max_repos: Optional[int] = None,
+        monorepo_only: bool = False,
+        include_monorepo: bool = False,
+        monorepo_file_threshold: int = 1000,
+        monorepo_loc_threshold: int = 300000
+    ):
         """Run the complete analysis"""
         
         try:
@@ -570,12 +765,35 @@ class GitHubAnalyzer:
                 if result['error']:
                     print(f"   ❌ Error: {result['error']}")
                 else:
+                    is_monorepo = (
+                        result.get('total_files', 0) > monorepo_file_threshold
+                        or result.get('lines_of_code', 0) > monorepo_loc_threshold
+                    )
+                    result['is_monorepo'] = is_monorepo
+                    result['scaled_file_count'] = (
+                        result.get('total_files', 0) / 1000.0 if is_monorepo
+                        else result.get('total_files', 0) / 100.0
+                    )
                     print(f"   ✅ Found {result['build_file_count']} build files, {len(result['contributors'])} contributors")
+                    print(
+                        f"      Files={result.get('total_files', 0)}, LOC={result.get('lines_of_code', 0)}, "
+                        f"Monorepo={'Yes' if result.get('is_monorepo') else 'No'}, "
+                        f"Scaled={result.get('scaled_file_count', 0.0):.2f}"
+                    )
+
+            if monorepo_only:
+                results = [r for r in results if r.get('is_monorepo')]
+                print(f"\n🏗️  Monorepo-only filter enabled. Remaining repositories: {len(results)}")
             
             # Generate reports
             print("\n📊 Generating reports...")
             report_gen = ReportGenerator(output_dir)
-            report_files = report_gen.generate_reports(results, user_info)
+            include_monorepo_effective = include_monorepo or monorepo_only
+            report_files = report_gen.generate_reports(
+                results,
+                user_info,
+                include_monorepo=include_monorepo_effective
+            )
             
             print("\n" + "="*80)
             print("✅ ANALYSIS COMPLETE!")
@@ -614,6 +832,12 @@ Examples:
   
   # Custom output directory
   python github-repo-analyzer.py --output-dir ./reports
+
+  # Analyze only monorepos
+  python github-repo-analyzer.py --monorepo-only
+
+  # Include monorepos in scaled count summary
+  python github-repo-analyzer.py --include-monorepo
         '''
     )
     
@@ -632,6 +856,32 @@ Examples:
         '--max-repos',
         type=int,
         help='Maximum number of repositories to analyze (for testing)'
+    )
+
+    parser.add_argument(
+        '--monorepo-only',
+        action='store_true',
+        help='Report only repositories classified as monorepos'
+    )
+
+    parser.add_argument(
+        '--include-monorepo',
+        action='store_true',
+        help='Include monorepos in the scaled repository count'
+    )
+
+    parser.add_argument(
+        '--monorepo-file-threshold',
+        type=int,
+        default=1000,
+        help='Monorepo file threshold (default: 1000)'
+    )
+
+    parser.add_argument(
+        '--monorepo-loc-threshold',
+        type=int,
+        default=300000,
+        help='Monorepo LOC threshold (default: 300000)'
     )
     
     args = parser.parse_args()
@@ -656,7 +906,14 @@ Examples:
     
     # Run analyzer
     analyzer = GitHubAnalyzer(config)
-    analyzer.run(output_dir=args.output_dir, max_repos=args.max_repos)
+    analyzer.run(
+        output_dir=args.output_dir,
+        max_repos=args.max_repos,
+        monorepo_only=args.monorepo_only,
+        include_monorepo=args.include_monorepo,
+        monorepo_file_threshold=args.monorepo_file_threshold,
+        monorepo_loc_threshold=args.monorepo_loc_threshold
+    )
 
 
 if __name__ == '__main__':

@@ -2,7 +2,7 @@
 
 **Date:** December 12, 2024  
 **Status:** ALL FILES SAVED AND VERIFIED  
-**Location:** `{PROJECT_ROOT}/Utils/asset-count-scripts/git/`
+**Location:** `/Users/francescocipollone/Documents/GitHub/autoconfig-priv-latest/Utils/asset-count-scripts/git/`
 
 ---
 
@@ -176,15 +176,15 @@ All files have been written to disk and verified:
 ```bash
 $ ls -lh
 total 224
--rw-r--r--  1 user  staff    13K Dec 12 18:49 EXECUTIVE_SUMMARY.md
--rw-r--r--  1 user  staff    11K Dec 12 18:49 IMPLEMENTATION_SUMMARY.md
--rw-r--r--  1 user  staff    20K Dec 12 18:49 PLAN_AND_EXECUTION.md
--rw-r--r--  1 user  staff   2.9K Dec 12 18:49 QUICK_START.md
--rw-r--r--  1 user  staff    13K Dec 12 18:49 README.md
--rw-r--r--  1 user  staff    24K Dec 12 18:49 github-repo-analyzer.py
--rw-r--r--  1 user  staff   212B Dec 12 18:49 github_config.ini.template
--rw-r--r--  1 user  staff   186B Dec 12 18:49 requirements.txt
--rw-r--r--  1 user  staff   4.1K Dec 12 18:50 test_analyzer.py
+-rw-r--r--  1 francescocipollone  staff    13K Dec 12 18:49 EXECUTIVE_SUMMARY.md
+-rw-r--r--  1 francescocipollone  staff    11K Dec 12 18:49 IMPLEMENTATION_SUMMARY.md
+-rw-r--r--  1 francescocipollone  staff    20K Dec 12 18:49 PLAN_AND_EXECUTION.md
+-rw-r--r--  1 francescocipollone  staff   2.9K Dec 12 18:49 QUICK_START.md
+-rw-r--r--  1 francescocipollone  staff    13K Dec 12 18:49 README.md
+-rw-r--r--  1 francescocipollone  staff    24K Dec 12 18:49 github-repo-analyzer.py
+-rw-r--r--  1 francescocipollone  staff   212B Dec 12 18:49 github_config.ini.template
+-rw-r--r--  1 francescocipollone  staff   186B Dec 12 18:49 requirements.txt
+-rw-r--r--  1 francescocipollone  staff   4.1K Dec 12 18:50 test_analyzer.py
 ```
 
 ### Content Verification

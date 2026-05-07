@@ -34,9 +34,15 @@ The script identifies build and dependency files across multiple technology stac
 For each repository, the script collects:
 - Repository name and URL
 - Primary programming language
+- Detected build technologies from build-file patterns
 - Public/private status
+- Total file count
+- Total lines of code (text-based approximation)
 - List of build files found
 - Count of build files
+- Monorepo flag (`files > 1000` OR `LOC > 300000`, configurable)
+- License file count (highlighted for monorepos)
+- Scaled repository count contribution (`files/100` or `files/1000` for monorepos)
 - List of unique contributors who touched build files (via git blame)
 - Count of unique contributors
 
@@ -45,9 +51,14 @@ For each repository, the script collects:
 The script generates overall statistics including:
 - **Total Repositories**: Count of all repositories analyzed
 - **Total Build Files**: Sum of all build files across all repos
+- **Total Files**: Aggregate repository file volume
+- **Total LOC**: Aggregate lines of code volume
+- **Monorepo Repositories**: Repositories above monorepo thresholds
+- **Scaled Repository Count**: File-weighted count (`/100` normal, `/1000` monorepo)
 - **Unique Contributors**: Aggregate count of unique users across all repos
 - **Repos with Build Files**: Count of repos that have at least one build file
 - **Language Distribution**: Breakdown of repos by primary language
+- **Technology Distribution**: Build technology categories inferred from build files
 - **Top Contributors**: Users who contributed to the most repositories
 
 ## 🚀 Quick Start
@@ -154,6 +165,15 @@ python github-repo-analyzer.py --output-dir ./reports
 # Limit analysis to first N repositories (useful for testing)
 python github-repo-analyzer.py --max-repos 10
 
+# Analyze only monorepos
+python github-repo-analyzer.py --monorepo-only
+
+# Include monorepos in scaled count summary
+python github-repo-analyzer.py --include-monorepo
+
+# Override monorepo thresholds
+python github-repo-analyzer.py --monorepo-file-threshold 1200 --monorepo-loc-threshold 350000
+
 # Combine options
 python github-repo-analyzer.py --token ghp_xxx --output-dir ./reports --max-repos 5
 ```
@@ -165,10 +185,14 @@ python github-repo-analyzer.py --token ghp_xxx --output-dir ./reports --max-repo
 | `--token` | GitHub Personal Access Token | `--token ghp_xxxxx` |
 | `--output-dir` | Directory for output reports | `--output-dir ./reports` |
 | `--max-repos` | Limit number of repos (testing) | `--max-repos 10` |
+| `--monorepo-only` | Include only repos flagged as monorepo | `--monorepo-only` |
+| `--include-monorepo` | Include monorepos in scaled count summary | `--include-monorepo` |
+| `--monorepo-file-threshold` | File threshold for monorepo flag | `--monorepo-file-threshold 1000` |
+| `--monorepo-loc-threshold` | LOC threshold for monorepo flag | `--monorepo-loc-threshold 300000` |
 
 ## 📄 Output Reports
 
-The script generates three report files with timestamps:
+The script generates four report files with timestamps:
 
 ### 1. JSON Report (`github_analysis_YYYYMMDD_HHMMSS.json`)
 
@@ -197,6 +221,15 @@ Contributor-focused report:
 |-------------------|------------------|--------------|
 
 **Use case**: Identify key contributors, team analysis, ownership tracking
+
+### 4. Detailed Repository CSV (`github_repo_details_YYYYMMDD_HHMMSS.csv`)
+
+Detailed monorepo/build inventory:
+
+| Repository | Lines Of Code | Total Files | Build Files | Technology | Monorepo | Monorepo License File Count |
+|------------|---------------|-------------|-------------|------------|----------|-----------------------------|
+
+**Use case**: Asset reporting, monorepo sizing, build governance, license checks
 
 ### Console Output
 

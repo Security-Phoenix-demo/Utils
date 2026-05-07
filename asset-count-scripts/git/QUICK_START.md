@@ -64,6 +64,37 @@ python github-repo-analyzer.py
 python github-repo-analyzer.py --output-dir ./reports
 ```
 
+### Monorepo-Only Analysis
+
+```bash
+python github-repo-analyzer.py --monorepo-only
+```
+
+### Include Monorepo in Scaled Count
+
+```bash
+python github-repo-analyzer.py --include-monorepo
+```
+
+### Recommended Commands (Copy/Paste)
+
+```bash
+# 1) Standard full scan with defaults (monorepo: files>1000 OR loc>300000)
+python github-repo-analyzer.py --output-dir ./reports
+
+# 2) Monorepo-only report
+python github-repo-analyzer.py --output-dir ./reports --monorepo-only
+
+# 3) Include monorepos in scaled count summary
+python github-repo-analyzer.py --output-dir ./reports --include-monorepo
+
+# 4) Tune thresholds (example)
+python github-repo-analyzer.py --output-dir ./reports --monorepo-file-threshold 1200 --monorepo-loc-threshold 350000
+
+# 5) Fast validation run before full org scan
+python github-repo-analyzer.py --output-dir ./reports --max-repos 10 --include-monorepo
+```
+
 ## Step 5: View Results
 
 ```bash
@@ -71,6 +102,7 @@ python github-repo-analyzer.py --output-dir ./reports
 ls -lh github_analysis_*.json
 ls -lh github_analysis_*.csv
 ls -lh github_contributors_*.csv
+ls -lh github_repo_details_*.csv
 
 # View JSON report
 cat github_analysis_*.json | jq '.summary'
@@ -82,8 +114,9 @@ open github_analysis_*.csv
 ## 📊 What You'll Get
 
 - **JSON Report**: Complete data for programmatic use
-- **CSV Report**: Repository-level details (Excel-ready)
+- **CSV Report**: Repository-level details, including file and LOC metrics
 - **Contributors CSV**: User-level statistics
+- **Detailed CSV**: `repo, LOC, total files, build files, technology, monorepo flag, monorepo license count`
 - **Console Output**: Summary and top repositories
 
 ## 🎯 Common Use Cases
