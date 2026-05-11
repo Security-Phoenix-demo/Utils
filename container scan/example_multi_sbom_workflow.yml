@@ -1,0 +1,360 @@
+name: Multi-SBOM Security Analysis Example
+
+# This example demonstrates the enhanced multi-SBOM approach
+# It discovers all build manifests and generates separate SBOMs for each
+
+on:
+  # Trigger on pushes to main branches
+  push:
+    branches: [ main, master, develop ]
+  
+  # Trigger on pull requests to main branches
+  pull_request:
+    branches: [ main, master ]
+  
+  # Schedule weekly scans on Sundays at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * 0'
+  
+  # Allow manual triggering with options
+  workflow_dispatch:
+    inputs:
+      max_concurrent_sboms:
+        description: 'Maximum concurrent SBOM generations (1-10)'
+        required: false
+        type: number
+        default: 5
+      include_test_manifests:
+        description: 'Include manifests in test directories'
+        required: false
+        type: boolean
+        default: false
+      enable_vulnerability_scan:
+        description: 'Enable vulnerability analysis'
+        required: false
+        type: boolean
+        default: true
+      assessment_prefix:
+        description: 'Custom assessment prefix (optional)'
+        required: false
+        type: string
+
+jobs:
+  multi-sbom-analysis:
+    name: Multi-SBOM Security Analysis
+    uses: ./.github/workflows/enhanced_multi_sbom_scan.yml
+    with:
+      # Phoenix Security Configuration
+      phoenix_api_url: "https://api.demo2.appsecphx.io"  # Replace with your Phoenix API URL
+      
+      # Assessment Configuration
+      assessment_prefix: ${{ github.event.inputs.assessment_prefix || github.repository }}
+      
+      # Processing Configuration
+      max_concurrent_sboms: ${{ fromJson(github.event.inputs.max_concurrent_sboms || '5') }}
+      include_test_manifests: ${{ fromJson(github.event.inputs.include_test_manifests || 'false') }}
+      
+      # SBOM Generation Configuration
+      cdx_version: "v11.2.3"
+      cdx_image: "cdxgen"
+      use_cdxgen_debug_mode: false
+      
+      # Vulnerability Analysis
+      enable_vulnerability_analysis: ${{ fromJson(github.event.inputs.enable_vulnerability_scan || 'true') }}
+      
+      # Filtering Configuration
+      exclude_patterns: "**/node_modules/**,**/target/**,**/build/**,**/.git/**,**/vendor/**,**/__pycache__/**"
+      manifest_size_limit_mb: 10
+      
+      # Optional: Upload to Dependency Track (uncomment if you have Dependency Track)
+      # upload_to_dependency_track: true
+      
+    secrets:
+      # Required Phoenix Security credentials
+      PHOENIX_CLIENT_ID: ${{ secrets.PHOENIX_CLIENT_ID }}
+      PHOENIX_CLIENT_SECRET: ${{ secrets.PHOENIX_CLIENT_SECRET }}
+      
+      # Optional: GitHub token for private repository access
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Optional: Dependency Track credentials (uncomment if using Dependency Track)
+      # DEPENDENCY_TRACK_API_KEY: ${{ secrets.DEPENDENCY_TRACK_API_KEY }}
+      # DEPENDENCY_TRACK_API_URL: ${{ secrets.DEPENDENCY_TRACK_API_URL }}
+      # DEPENDENCY_TRACK_PROJECT_UUID: ${{ secrets.DEPENDENCY_TRACK_PROJECT_UUID }}
+
+  # Example: Process results and create issues for critical vulnerabilities
+  process-security-results:
+    name: Process Security Results
+    runs-on: ubuntu-latest
+    needs: multi-sbom-analysis
+    if: always()
+    permissions:
+      issues: write  # Required to create issues
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all SBOM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./security-results
+
+      - name: Setup Python for analysis
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Analyze security results
+        id: analyze
+        run: |
+          cat > analyze_results.py << 'EOF'
+          #!/usr/bin/env python3
+          import json
+          import os
+          from pathlib import Path
+          from collections import defaultdict
+          
+          def analyze_vulnerabilities():
+              """Analyze all vulnerability results"""
+              results = {
+                  'total_manifests': 0,
+                  'total_components': 0,
+                  'vulnerabilities_by_severity': defaultdict(int),
+                  'critical_vulnerabilities': [],
+                  'manifest_summaries': []
+              }
+              
+              # Process each SBOM result directory
+              for result_dir in Path('./security-results').glob('sbom-results-*'):
+                  if not result_dir.is_dir():
+                      continue
+                  
+                  # Find the actual SBOM directory inside
+                  sbom_dirs = list(result_dir.glob('sbom_*'))
+                  if not sbom_dirs:
+                      continue
+                  
+                  sbom_dir = sbom_dirs[0]
+                  manifest_info_file = sbom_dir / 'manifest_info.json'
+                  sbom_file = sbom_dir / 'sbom.json'
+                  vuln_file = sbom_dir / 'vulnerabilities.json'
+                  
+                  if not all([manifest_info_file.exists(), sbom_file.exists()]):
+                      continue
+                  
+                  # Load manifest info
+                  with open(manifest_info_file) as f:
+                      manifest_info = json.load(f)
+                  
+                  # Load SBOM
+                  with open(sbom_file) as f:
+                      sbom_data = json.load(f)
+                  
+                  components = len(sbom_data.get('components', []))
+                  results['total_components'] += components
+                  results['total_manifests'] += 1
+                  
+                  manifest_summary = {
+                      'manifest_path': manifest_info['manifest_path'],
+                      'language': manifest_info['language'],
+                      'scan_type': manifest_info['scan_type'],
+                      'components': components,
+                      'vulnerabilities': {'total': 0, 'critical': 0, 'high': 0}
+                  }
+                  
+                  # Load vulnerabilities if available
+                  if vuln_file.exists():
+                      with open(vuln_file) as f:
+                          vuln_data = json.load(f)
+                      
+                      matches = vuln_data.get('matches', [])
+                      manifest_summary['vulnerabilities']['total'] = len(matches)
+                      
+                      for match in matches:
+                          severity = match.get('vulnerability', {}).get('severity', 'Unknown')
+                          results['vulnerabilities_by_severity'][severity] += 1
+                          
+                          if severity == 'Critical':
+                              manifest_summary['vulnerabilities']['critical'] += 1
+                              results['critical_vulnerabilities'].append({
+                                  'manifest': manifest_info['manifest_path'],
+                                  'vulnerability': match.get('vulnerability', {}),
+                                  'artifact': match.get('artifact', {})
+                              })
+                          elif severity == 'High':
+                              manifest_summary['vulnerabilities']['high'] += 1
+                  
+                  results['manifest_summaries'].append(manifest_summary)
+              
+              return results
+          
+          # Analyze results
+          analysis = analyze_vulnerabilities()
+          
+          # Output results for GitHub Actions
+          print(f"Total manifests processed: {analysis['total_manifests']}")
+          print(f"Total components found: {analysis['total_components']}")
+          print(f"Critical vulnerabilities: {analysis['vulnerabilities_by_severity']['Critical']}")
+          print(f"High vulnerabilities: {analysis['vulnerabilities_by_severity']['High']}")
+          
+          # Set outputs
+          print(f"::set-output name=total_manifests::{analysis['total_manifests']}")
+          print(f"::set-output name=total_components::{analysis['total_components']}")
+          print(f"::set-output name=critical_vulns::{analysis['vulnerabilities_by_severity']['Critical']}")
+          print(f"::set-output name=high_vulns::{analysis['vulnerabilities_by_severity']['High']}")
+          
+          # Save detailed results
+          with open('security_analysis.json', 'w') as f:
+              json.dump(analysis, f, indent=2)
+          
+          EOF
+          
+          python3 analyze_results.py
+
+      - name: Create security summary
+        run: |
+          echo "## 🔒 Multi-SBOM Security Analysis Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Analysis Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow:** ${{ github.workflow }} #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📊 Overall Statistics" >> $GITHUB_STEP_SUMMARY
+          echo "- **Manifests Processed:** ${{ steps.analyze.outputs.total_manifests }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Components:** ${{ steps.analyze.outputs.total_components }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Critical Vulnerabilities:** ${{ steps.analyze.outputs.critical_vulns }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **High Vulnerabilities:** ${{ steps.analyze.outputs.high_vulns }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Add manifest breakdown if analysis file exists
+          if [ -f "security_analysis.json" ]; then
+            echo "### 📋 Manifest Breakdown" >> $GITHUB_STEP_SUMMARY
+            echo "| Manifest | Language | Components | Critical | High |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|----------|------------|----------|------|" >> $GITHUB_STEP_SUMMARY
+            
+            python3 << 'EOF' >> $GITHUB_STEP_SUMMARY
+          import json
+          with open('security_analysis.json') as f:
+              data = json.load(f)
+          for manifest in data['manifest_summaries']:
+              path = manifest['manifest_path']
+              lang = manifest['language']
+              components = manifest['components']
+              critical = manifest['vulnerabilities']['critical']
+              high = manifest['vulnerabilities']['high']
+              print(f"| `{path}` | {lang} | {components} | {critical} | {high} |")
+          EOF
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🚀 Phoenix Security Integration" >> $GITHUB_STEP_SUMMARY
+          echo "All SBOMs have been uploaded to Phoenix Security with appropriate scan types." >> $GITHUB_STEP_SUMMARY
+          echo "Check the Phoenix Security dashboard for detailed analysis and remediation guidance." >> $GITHUB_STEP_SUMMARY
+
+      - name: Create issue for critical vulnerabilities
+        if: steps.analyze.outputs.critical_vulns > 0
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            // Read analysis results
+            const analysis = JSON.parse(fs.readFileSync('security_analysis.json', 'utf8'));
+            const criticalVulns = analysis.critical_vulnerabilities;
+            
+            if (criticalVulns.length === 0) return;
+            
+            // Create issue body
+            let issueBody = `## 🚨 Critical Security Vulnerabilities Detected
+            
+            **Repository:** ${{ github.repository }}
+            **Scan Date:** ${new Date().toISOString().split('T')[0]}
+            **Workflow Run:** [${{ github.workflow }} #${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            
+            ### Summary
+            - **Total Critical Vulnerabilities:** ${criticalVulns.length}
+            - **Manifests Affected:** ${new Set(criticalVulns.map(v => v.manifest)).size}
+            
+            ### Critical Vulnerabilities
+            
+            `;
+            
+            // Group by manifest
+            const vulnsByManifest = {};
+            criticalVulns.forEach(vuln => {
+              if (!vulnsByManifest[vuln.manifest]) {
+                vulnsByManifest[vuln.manifest] = [];
+              }
+              vulnsByManifest[vuln.manifest].push(vuln);
+            });
+            
+            // Add details for each manifest
+            Object.entries(vulnsByManifest).forEach(([manifest, vulns]) => {
+              issueBody += `#### ${manifest}\n\n`;
+              vulns.forEach(vuln => {
+                const v = vuln.vulnerability;
+                const artifact = vuln.artifact;
+                issueBody += `- **${v.id || 'Unknown ID'}** in \`${artifact.name || 'Unknown'}@${artifact.version || 'Unknown'}\`\n`;
+                if (v.description) {
+                  issueBody += `  - ${v.description.substring(0, 200)}${v.description.length > 200 ? '...' : ''}\n`;
+                }
+                if (v.severity) {
+                  issueBody += `  - **Severity:** ${v.severity}\n`;
+                }
+                issueBody += '\n';
+              });
+            });
+            
+            issueBody += `
+            ### Next Steps
+            
+            1. Review the detailed vulnerability reports in the [workflow artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            2. Check Phoenix Security dashboard for remediation guidance
+            3. Update affected dependencies to patched versions
+            4. Re-run the security scan after applying fixes
+            
+            ### Automation
+            
+            This issue was automatically created by the Multi-SBOM Security Analysis workflow.
+            It will be updated when new critical vulnerabilities are detected.
+            `;
+            
+            // Check if issue already exists
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['security', 'critical-vulnerabilities'],
+              state: 'open'
+            });
+            
+            if (existingIssues.data.length > 0) {
+              // Update existing issue
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssues.data[0].number,
+                body: issueBody
+              });
+              console.log(`Updated existing issue #${existingIssues.data[0].number}`);
+            } else {
+              // Create new issue
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 Critical Security Vulnerabilities Detected (${criticalVulns.length} found)`,
+                body: issueBody,
+                labels: ['security', 'critical-vulnerabilities', 'automated']
+              });
+              console.log(`Created new issue #${issue.data.number}`);
+            }
+
+      - name: Upload analysis results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-analysis-summary
+          path: |
+            security_analysis.json
+          retention-days: 90
