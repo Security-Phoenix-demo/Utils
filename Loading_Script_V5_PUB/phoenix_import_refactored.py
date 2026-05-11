@@ -1044,7 +1044,20 @@ class PhoenixAPIClient:
                     phoenix_finding['referenceIds'] = phoenix_finding.pop('reference_ids')
                 if 'published_date_time' in phoenix_finding:
                     phoenix_finding['publishedDateTime'] = phoenix_finding.pop('published_date_time')
-                
+
+                # Phoenix expects severity as a float (e.g. 5.0), not a string ("5.0").
+                # VulnerabilityData stores it as str internally; cast it here at the
+                # serialization boundary so all translators benefit automatically.
+                if 'severity' in phoenix_finding and phoenix_finding['severity'] is not None:
+                    try:
+                        phoenix_finding['severity'] = float(phoenix_finding['severity'])
+                    except (ValueError, TypeError):
+                        logger.warning(
+                            "Could not cast severity '%s' to float — defaulting to 5.0",
+                            phoenix_finding['severity'],
+                        )
+                        phoenix_finding['severity'] = 5.0
+
                 phoenix_findings.append(phoenix_finding)
             
             # Transform asset attributes to match Phoenix API field names
