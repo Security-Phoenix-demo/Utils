@@ -269,12 +269,9 @@ class TrivyTranslator(ScannerTranslator):
 
         asset = AssetData(
             asset_type=asset_type,
-            asset_type=asset_type,
             attributes=asset_attributes,
             tags=self.tag_config.get_all_tags() + [
                 {"key": "scanner", "value": "trivy"},
-                {"key": "artifact_type", "value": artifact_type_raw or 'unknown'},
-                {"key": "asset_type_source", "value": type_source},
                 {"key": "artifact_type", "value": artifact_type_raw or 'unknown'},
                 {"key": "asset_type_source", "value": type_source},
             ]
@@ -364,12 +361,9 @@ class TrivyTranslator(ScannerTranslator):
 
             asset = AssetData(
                 asset_type=asset_type,
-                asset_type=asset_type,
                 attributes=asset_attributes,
                 tags=self.tag_config.get_all_tags() + [
                     {"key": "scanner", "value": "trivy"},
-                    {"key": "target_type", "value": target_type},
-                    {"key": "asset_type_source", "value": type_source},
                     {"key": "target_type", "value": target_type},
                     {"key": "asset_type_source", "value": type_source},
                 ]
@@ -447,13 +441,10 @@ class TrivyTranslator(ScannerTranslator):
 
             asset = AssetData(
                 asset_type='INFRA',
-                asset_type='INFRA',
                 attributes=asset_attributes,
                 tags=self.tag_config.get_all_tags() + [
                     {"key": "scanner", "value": "trivy"},
                     {"key": "kubernetes_namespace", "value": namespace},
-                    {"key": "kubernetes_kind", "value": kind},
-                    {"key": "asset_type_source", "value": "detected"},
                     {"key": "kubernetes_kind", "value": kind},
                     {"key": "asset_type_source", "value": "detected"},
                 ]
