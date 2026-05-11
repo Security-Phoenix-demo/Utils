@@ -1,0 +1,135 @@
+name: Security Analysis Example
+
+# This is an example workflow showing how to use the enhanced SBOM vulnerability scan
+# Copy this to .github/workflows/ in your repository and customize as needed
+
+on:
+  # Trigger on pushes to main branches
+  push:
+    branches: [ main, master, develop ]
+  
+  # Trigger on pull requests to main branches
+  pull_request:
+    branches: [ main, master ]
+  
+  # Schedule weekly scans on Sundays at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * 0'
+  
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      force_language:
+        description: 'Force specific language (optional)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - java
+          - kotlin
+          - python
+          - javascript
+          - typescript
+          - csharp
+          - go
+          - rust
+          - php
+          - ruby
+          - swift
+          - cpp
+          - c
+          - generic
+      enable_vulnerability_scan:
+        description: 'Enable vulnerability analysis'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  security-analysis:
+    name: SBOM & Vulnerability Analysis
+    uses: ./.github/workflows/enhanced_sbom_vulnerability_scan.yml
+    with:
+      # Phoenix Security Configuration
+      phoenix_api_url: "https://api.demo2.appsecphx.io"  # Replace with your Phoenix API URL
+      
+      # Assessment Configuration
+      assessment_name: "${{ github.repository }}_security_scan_${{ github.run_number }}"
+      scan_target: "${{ github.event.repository.name }}"
+      
+      # Language Detection
+      auto_detect_language: true
+      force_language: ${{ github.event.inputs.force_language || '' }}
+      
+      # SBOM Generation Configuration
+      cdx_version: "v11.2.3"
+      cdx_image: "cdxgen"
+      use_cdxgen_debug_mode: false
+      
+      # Vulnerability Analysis
+      enable_vulnerability_analysis: ${{ github.event.inputs.enable_vulnerability_scan || true }}
+      
+      # Optional: Upload to Dependency Track (uncomment if you have Dependency Track)
+      # upload_to_dependency_track: true
+      
+    secrets:
+      # Required Phoenix Security credentials
+      PHOENIX_CLIENT_ID: ${{ secrets.PHOENIX_CLIENT_ID }}
+      PHOENIX_CLIENT_SECRET: ${{ secrets.PHOENIX_CLIENT_SECRET }}
+      
+      # Optional: GitHub token for private repository access
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Optional: Dependency Track credentials (uncomment if using Dependency Track)
+      # DEPENDENCY_TRACK_API_KEY: ${{ secrets.DEPENDENCY_TRACK_API_KEY }}
+      # DEPENDENCY_TRACK_API_URL: ${{ secrets.DEPENDENCY_TRACK_API_URL }}
+      # DEPENDENCY_TRACK_PROJECT_UUID: ${{ secrets.DEPENDENCY_TRACK_PROJECT_UUID }}
+
+  # Optional: Additional job to process results
+  process-results:
+    name: Process Security Results
+    runs-on: ubuntu-latest
+    needs: security-analysis
+    if: always()  # Run even if security analysis fails
+    steps:
+      - name: Download security analysis artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: security-analysis-results
+          path: ./security-results
+      
+      - name: Display security summary
+        run: |
+          echo "## 🔒 Security Analysis Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "./security-results/security_report.md" ]; then
+            echo "### 📋 Security Report" >> $GITHUB_STEP_SUMMARY
+            cat ./security-results/security_report.md >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -f "./security-results/vulnerabilities_summary.txt" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🛡️ Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            head -20 ./security-results/vulnerabilities_summary.txt >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      - name: Check for critical vulnerabilities
+        run: |
+          if [ -f "./security-results/vulnerabilities.json" ]; then
+            # Count critical and high severity vulnerabilities
+            CRITICAL_COUNT=$(jq '[.matches[] | select(.vulnerability.severity == "Critical")] | length' ./security-results/vulnerabilities.json 2>/dev/null || echo "0")
+            HIGH_COUNT=$(jq '[.matches[] | select(.vulnerability.severity == "High")] | length' ./security-results/vulnerabilities.json 2>/dev/null || echo "0")
+            
+            echo "Critical vulnerabilities found: $CRITICAL_COUNT"
+            echo "High severity vulnerabilities found: $HIGH_COUNT"
+            
+            # Optionally fail the build if critical vulnerabilities are found
+            # Uncomment the following lines to enable this behavior:
+            # if [ "$CRITICAL_COUNT" -gt "0" ]; then
+            #   echo "❌ Build failed due to $CRITICAL_COUNT critical vulnerabilities"
+            #   exit 1
+            # fi
+          fi
