@@ -23,8 +23,18 @@ The translator determines asset_type per-file from JSON content:
 - ArtifactType=vm -> INFRA
 - ArtifactType=repository -> REPOSITORY
 - ArtifactType=filesystem|cyclonedx|spdx with lang-pkgs/os-pkgs Class -> BUILD
-- ArtifactType=filesystem|cyclonedx|spdx without dep Class -> REPOSITORY
+- ArtifactType=filesystem|cyclonedx|spdx with secret Class only -> REPOSITORY
+- ArtifactType=filesystem|cyclonedx|spdx without dep/secret Class -> REPOSITORY
 - Legacy/ambiguous -> CLI override if provided, else CONTAINER
+
+Finding Types Handled:
+- Vulnerabilities[] -> CVE/package vulnerability findings
+- Misconfigurations[] -> infrastructure misconfiguration findings
+- Secrets[] -> exposed secret/credential findings (RuleID, Category, Severity)
+
+Assets with no findings after full translation are skipped — they are never
+sent to Phoenix with an empty findings array, preventing phantom assets with
+no risk score. Use --create-inventory-assets to override this behaviour.
 
 The CLI --asset-type is passed in as `asset_type_override` and is used only
 as a fallback for ambiguous files (legacy format or unknown ArtifactType).
@@ -192,7 +202,7 @@ class TrivyTranslator(ScannerTranslator):
         file_path: str,
         asset_type_override: Optional[str] = None,
     ) -> List[AssetData]:
-        """Parse new Trivy format: Results[] → Vulnerabilities[]"""
+        """Parse new Trivy format: Results[] → Vulnerabilities[], Misconfigurations[], Secrets[]"""
         assets = []
 
         # Get artifact info — fall back to first Result's Target when ArtifactName is empty
@@ -226,27 +236,34 @@ class TrivyTranslator(ScannerTranslator):
             ]
         )
 
-        # Process Results[] → Vulnerabilities[]
+        # Process Results[] → Vulnerabilities[], Misconfigurations[], Secrets[]
         for result in results:
             target = result.get('Target', '')
 
-            # Process vulnerabilities
-            vulnerabilities = result.get('Vulnerabilities', [])
-            if vulnerabilities:
-                for vuln_data in vulnerabilities:
-                    vuln = self._create_vulnerability(vuln_data, target)
-                    if vuln:
-                        asset.findings.append(vuln)
+            for vuln_data in result.get('Vulnerabilities') or []:
+                vuln = self._create_vulnerability(vuln_data, target)
+                if vuln:
+                    asset.findings.append(vuln)
 
-            # Process misconfigurations
-            misconfigs = result.get('Misconfigurations', [])
-            if misconfigs:
-                for misconfig_data in misconfigs:
-                    vuln = self._create_misconfiguration_finding(misconfig_data, target)
-                    if vuln:
-                        asset.findings.append(vuln)
+            for misconfig_data in result.get('Misconfigurations') or []:
+                finding = self._create_misconfiguration_finding(misconfig_data, target)
+                if finding:
+                    asset.findings.append(finding)
 
-        assets.append(self.ensure_asset_has_findings(asset))
+            for secret_data in result.get('Secrets') or []:
+                finding = self._create_secret_finding(secret_data, target)
+                if finding:
+                    asset.findings.append(finding)
+
+        processed = self.ensure_asset_has_findings(asset)
+        if not processed.findings:
+            logger.warning(
+                "Trivy asset '%s' (%s) produced no findings after translation — skipping. "
+                "Pass --create-inventory-assets to create it anyway.",
+                artifact_name, asset_type,
+            )
+            return assets
+        assets.append(processed)
         return assets
 
     def _parse_legacy_format(
@@ -287,15 +304,24 @@ class TrivyTranslator(ScannerTranslator):
                 ]
             )
 
-            # Process vulnerabilities
-            vulnerabilities = item.get('Vulnerabilities', [])
-            if vulnerabilities:
-                for vuln_data in vulnerabilities:
-                    vuln = self._create_vulnerability(vuln_data, target)
-                    if vuln:
-                        asset.findings.append(vuln)
+            for vuln_data in item.get('Vulnerabilities') or []:
+                vuln = self._create_vulnerability(vuln_data, target)
+                if vuln:
+                    asset.findings.append(vuln)
 
-            assets.append(self.ensure_asset_has_findings(asset))
+            for secret_data in item.get('Secrets') or []:
+                finding = self._create_secret_finding(secret_data, target)
+                if finding:
+                    asset.findings.append(finding)
+
+            processed = self.ensure_asset_has_findings(asset)
+            if not processed.findings:
+                logger.warning(
+                    "Trivy legacy asset '%s' produced no findings after translation — skipping.",
+                    target,
+                )
+                continue
+            assets.append(processed)
 
         return assets
 
@@ -337,28 +363,32 @@ class TrivyTranslator(ScannerTranslator):
                 ]
             )
 
-            # Process Results[] → Misconfigurations[] or Vulnerabilities[]
-            results = resource.get('Results', [])
-            for result in results:
+            for result in resource.get('Results') or []:
                 target = result.get('Target', '')
 
-                # Process misconfigurations
-                misconfigs = result.get('Misconfigurations', [])
-                if misconfigs:
-                    for misconfig_data in misconfigs:
-                        vuln = self._create_misconfiguration_finding(misconfig_data, target)
-                        if vuln:
-                            asset.findings.append(vuln)
+                for misconfig_data in result.get('Misconfigurations') or []:
+                    finding = self._create_misconfiguration_finding(misconfig_data, target)
+                    if finding:
+                        asset.findings.append(finding)
 
-                # Process vulnerabilities
-                vulnerabilities = result.get('Vulnerabilities', [])
-                if vulnerabilities:
-                    for vuln_data in vulnerabilities:
-                        vuln = self._create_vulnerability(vuln_data, target)
-                        if vuln:
-                            asset.findings.append(vuln)
+                for vuln_data in result.get('Vulnerabilities') or []:
+                    vuln = self._create_vulnerability(vuln_data, target)
+                    if vuln:
+                        asset.findings.append(vuln)
 
-            assets.append(self.ensure_asset_has_findings(asset))
+                for secret_data in result.get('Secrets') or []:
+                    finding = self._create_secret_finding(secret_data, target)
+                    if finding:
+                        asset.findings.append(finding)
+
+            processed = self.ensure_asset_has_findings(asset)
+            if not processed.findings:
+                logger.warning(
+                    "Trivy k8s asset '%s' (%s/%s) produced no findings — skipping.",
+                    name, namespace, kind,
+                )
+                continue
+            assets.append(processed)
 
         return assets
 
@@ -390,14 +420,12 @@ class TrivyTranslator(ScannerTranslator):
 
         # Get CWE IDs
         cwe_ids = vuln_data.get('CweIDs', [])
-        
 
         # Create remedy
         if fixed_version:
             remedy = f"Update {pkg_name} from {installed_version} to {fixed_version}"
         else:
             remedy = "No fix available"
-        
 
         vulnerability = VulnerabilityData(
             name=vuln_id,
@@ -421,6 +449,68 @@ class TrivyTranslator(ScannerTranslator):
         )
 
         return vulnerability.__dict__
+
+    def _create_secret_finding(self, secret_data: Dict, target: str) -> Optional[Dict]:
+        """Create a finding from a Trivy Secrets[] entry.
+
+        Trivy secret fields:
+          RuleID   - machine-readable rule identifier (e.g. "private-key")
+          Category - broad category (e.g. "AsymmetricPrivateKey")
+          Severity - HIGH / MEDIUM / LOW / CRITICAL
+          Title    - human-readable label
+          StartLine / EndLine - line range in the file
+          Match    - redacted matched text (already masked by Trivy)
+          Offset   - byte offset in the file
+        """
+        rule_id = secret_data.get('RuleID', '')
+        if not rule_id:
+            return None
+
+        severity = secret_data.get('Severity', 'HIGH')
+        title = secret_data.get('Title', rule_id)
+        category = secret_data.get('Category', '')
+        start_line = secret_data.get('StartLine')
+        end_line = secret_data.get('EndLine')
+
+        if start_line is not None and end_line is not None:
+            location = f"{target}:{start_line}-{end_line}"
+        else:
+            location = target
+
+        description = (
+            f"{title}. "
+            f"A secret of category '{category}' was detected in '{target}'. "
+            "Exposed secrets must be rotated immediately — simply removing them "
+            "from the current commit is insufficient if the repository history "
+            "is accessible."
+        )
+        remedy = (
+            "1. Immediately revoke/rotate the exposed credential. "
+            "2. Remove the secret from all branches and rewrite git history "
+            "(git filter-repo or BFG Repo Cleaner). "
+            "3. Audit access logs for the exposed credential. "
+            "4. Use a secrets manager or environment variables for future credentials."
+        )
+
+        finding = VulnerabilityData(
+            name=f"SECRET-{rule_id}",
+            description=description,
+            remedy=remedy,
+            severity=self.normalize_severity(severity),
+            location=location,
+            reference_ids=[],
+            details={
+                'rule_id': rule_id,
+                'category': category,
+                'title': title,
+                'target': target,
+                'start_line': start_line,
+                'end_line': end_line,
+                'offset': secret_data.get('Offset'),
+                'finding_type': 'secret',
+            }
+        )
+        return finding.__dict__
 
     def _create_misconfiguration_finding(self, misconfig_data: Dict, target: str) -> Optional[Dict]:
         """Create a misconfiguration finding from Trivy data"""
