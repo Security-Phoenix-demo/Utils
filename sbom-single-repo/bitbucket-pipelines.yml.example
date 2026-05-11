@@ -1,0 +1,19 @@
+image: python:3.11
+
+pipelines:
+  default:
+    - step:
+        name: Generate SBOM and import to Phoenix
+        services:
+          - docker
+        caches:
+          - pip
+        script:
+          - pip install -r requirements.txt
+          - docker run --rm -v "$BITBUCKET_CLONE_DIR:/workspace" aquasec/trivy:latest fs /workspace --format cyclonedx --output /workspace/sbom.cdx.json
+          - python3 sbom_sca_single_repo_to_phoenix.py --sbom-file sbom.cdx.json --file-path package-lock.json --from-bitbucket-env --import-type merge
+
+definitions:
+  services:
+    docker:
+      memory: 1024

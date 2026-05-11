@@ -76,6 +76,27 @@ python github-repo-analyzer.py --monorepo-only
 python github-repo-analyzer.py --include-monorepo
 ```
 
+### Bitbucket Cloud Variation
+
+```bash
+python bitbucket-repo-analyzer.py \
+  --provider bitbucket-cloud \
+  --workspace <your-workspace> \
+  --username <your-username> \
+  --token <your-token> \
+  --output-dir ./reports
+```
+
+### Bitbucket On-Prem (Server/Data Center) Variation
+
+```bash
+python bitbucket-repo-analyzer.py \
+  --provider bitbucket-server \
+  --base-url https://bitbucket.example.com \
+  --token <your-token> \
+  --output-dir ./reports
+```
+
 ### Recommended Commands (Copy/Paste)
 
 ```bash
@@ -93,6 +114,12 @@ python github-repo-analyzer.py --output-dir ./reports --monorepo-file-threshold 
 
 # 5) Fast validation run before full org scan
 python github-repo-analyzer.py --output-dir ./reports --max-repos 10 --include-monorepo
+
+# 6) Bitbucket Cloud full scan
+python bitbucket-repo-analyzer.py --provider bitbucket-cloud --workspace <your-workspace> --username <your-username> --token <your-token> --output-dir ./reports
+
+# 7) Bitbucket Server/DC full scan
+python bitbucket-repo-analyzer.py --provider bitbucket-server --base-url https://bitbucket.example.com --token <your-token> --output-dir ./reports
 ```
 
 ## Step 5: View Results
