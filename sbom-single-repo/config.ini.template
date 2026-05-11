@@ -1,0 +1,10 @@
+[phoenix]
+client_id =
+client_secret =
+api_base_url = https://api.securityphoenix.cloud
+import_type = merge
+assessment_name = single-repo-sca-sbom
+
+[options]
+verify_tls = true
+timeout_seconds = 60

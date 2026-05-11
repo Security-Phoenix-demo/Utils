@@ -75,6 +75,12 @@ nano github_config.ini
 
 # 4. Run the script
 python github-repo-analyzer.py
+
+# Bitbucket variation (cloud)
+python bitbucket-repo-analyzer.py --provider bitbucket-cloud --workspace <your-workspace> --username <your-username> --token <your-token>
+
+# Bitbucket variation (server/data center)
+python bitbucket-repo-analyzer.py --provider bitbucket-server --base-url https://bitbucket.example.com --token <your-token>
 ```
 
 ## 📋 Prerequisites

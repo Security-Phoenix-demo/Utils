@@ -1,0 +1,14 @@
+[bitbucket]
+# bitbucket-cloud or bitbucket-server
+provider = bitbucket-cloud
+
+# Required token/app password
+token = <your-token>
+
+# For bitbucket-cloud app password auth
+username = <your-username>
+workspace = <your-workspace>
+
+# For bitbucket-server/datacenter
+base_url = https://bitbucket.example.com
+project_key =
