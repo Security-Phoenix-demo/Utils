@@ -100,33 +100,7 @@ class GrypeTranslator(ScannerTranslator):
         else:
             image_name = str(target_info) if target_info else 'unknown'
 
-        # Specific OCI labels that map to Phoenix asset attributes (not tags)
-        LABEL_TO_ATTRIBUTE = {
-            "org.opencontainers.image.base.digest": "imageDigest",
-            "org.opencontainers.image.base.name":   "imageName",
-        }
-
-        # Promote OCI labels: mapped labels -> asset attributes, rest -> tags
-        label_tags: List[Dict[str, str]] = []
-        label_attributes: Dict[str, str] = {}
-        labels = target_info.get('labels') if isinstance(target_info, dict) else None
-        if isinstance(labels, dict) and labels:
-            for k, v in labels.items():
-                if not k or v is None:
-                    continue
-                value_str = str(v).strip()
-                if not value_str:
-                    continue
-                if k in LABEL_TO_ATTRIBUTE:
-                    label_attributes[LABEL_TO_ATTRIBUTE[k]] = value_str
-                else:
-                    label_tags.append({"key": str(k), "value": value_str})
-            logger.info(
-                "Grype: %d OCI labels -> attributes, %d -> tags",
-                len(label_attributes), len(label_tags),
-            )
-            logger.debug("Grype attribute keys from labels: %s", list(label_attributes.keys()))
-            logger.debug("Grype tag keys from labels: %s", [t['key'] for t in label_tags])
+        label_attributes, label_tags = self.promote_oci_labels(target_info)
 
         # Create container asset
         asset_attributes = {

@@ -659,20 +659,23 @@ class EnhancedMultiScannerImportManager:
                     pass
 
                 if translator_owns_file:
-                    _scanner_name = detected_scanner if 'detected_scanner' in locals() else (scanner_type or 'unknown')
+                    _scanner_name = locals().get('detected_scanner', scanner_type or 'unknown')
                     logger.warning(
                         "⚠️ Translator '%s' produced zero assets — scan file contains no findings. "
                         "Completing successfully with 0 assets imported.",
                         _scanner_name,
                     )
+                    _assessment_name = assessment_name or self._generate_assessment_name(file_path, _scanner_name)
                     return {
                         'success': True,
                         'assets_imported': 0,
                         'vulnerabilities_imported': 0,
                         'scanner_type': _scanner_name,
+                        'assessment_name': _assessment_name,
                         'file_path': file_path,
                         'message': 'Scan file processed successfully — no findings found',
                     }
+
 
                 logger.warning(f"⚠️ No assets parsed from file, enabling fallback asset creation")
 
