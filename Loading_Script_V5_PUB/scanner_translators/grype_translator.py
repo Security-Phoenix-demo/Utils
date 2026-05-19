@@ -13,6 +13,12 @@ Scanner Detection:
 - Checks for 'matches' array with vulnerability/artifact structure
 
 Asset Type: CONTAINER
+
+Tagging / Attributes:
+- org.opencontainers.image.base.digest -> asset_attributes['imageDigest']
+- org.opencontainers.image.base.name   -> asset_attributes['imageName']
+- All other labels -> Phoenix asset tags (verbatim key/value).
+- Missing / null / empty labels are tolerated; the translator never crashes.
 """
 
 import json
@@ -93,12 +99,15 @@ class GrypeTranslator(ScannerTranslator):
             image_name = target_info.get('userInput', target_info.get('imageID', 'unknown'))
         else:
             image_name = str(target_info) if target_info else 'unknown'
-        
+
+        label_attributes, label_tags = self.promote_oci_labels(target_info)
+
         # Create container asset
         asset_attributes = {
             'dockerfile': 'Dockerfile',
             'origin': 'anchore-grype',
-            'repository': image_name
+            'repository': image_name,
+            **label_attributes,
         }
         
         asset = AssetData(
@@ -106,8 +115,8 @@ class GrypeTranslator(ScannerTranslator):
             attributes=asset_attributes,
             tags=self.tag_config.get_all_tags() + [
                 {"key": "scanner", "value": "anchore-grype"},
-                {"key": "source-type", "value": source_type}
-            ]
+                {"key": "source-type", "value": source_type},
+            ] + label_tags
         )
         
         # Process matches (vulnerabilities)

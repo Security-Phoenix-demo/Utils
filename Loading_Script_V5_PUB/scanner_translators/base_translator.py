@@ -68,6 +68,48 @@ class ScannerTranslator(ABC):
         """Parse the scanner file and return Phoenix assets"""
         pass
     
+    @staticmethod
+    def promote_oci_labels(
+        target_info: Any,
+        label_to_attribute: Optional[Dict[str, str]] = None,
+    ) -> tuple:
+        """Split OCI image labels into Phoenix asset attributes and tags.
+
+        Labels whose keys appear in *label_to_attribute* are placed in the
+        returned attributes dict (with the mapped camelCase key).
+        All remaining non-empty labels become Phoenix tag dicts.
+
+        Returns:
+            (label_attributes, label_tags)
+        """
+        if label_to_attribute is None:
+            label_to_attribute = {
+                "org.opencontainers.image.base.digest": "imageDigest",
+                "org.opencontainers.image.base.name":   "imageName",
+            }
+
+        label_tags: List[Dict[str, str]] = []
+        label_attributes: Dict[str, str] = {}
+        labels = target_info.get('labels') if isinstance(target_info, dict) else None
+        if isinstance(labels, dict) and labels:
+            for k, v in labels.items():
+                if not k or v is None:
+                    continue
+                value_str = str(v).strip()
+                if not value_str:
+                    continue
+                if k in label_to_attribute:
+                    label_attributes[label_to_attribute[k]] = value_str
+                else:
+                    label_tags.append({"key": str(k), "value": value_str})
+            logger.info(
+                "OCI labels: %d -> attributes, %d -> tags",
+                len(label_attributes), len(label_tags),
+            )
+            logger.debug("Attribute keys from labels: %s", list(label_attributes.keys()))
+            logger.debug("Tag keys from labels: %s", [t['key'] for t in label_tags])
+        return label_attributes, label_tags
+
     def normalize_severity(self, severity: str) -> str:
         """Normalize severity to Phoenix format (1.0-10.0)"""
         if not severity:

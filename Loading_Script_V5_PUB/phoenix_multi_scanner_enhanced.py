@@ -648,6 +648,35 @@ class EnhancedMultiScannerImportManager:
 
             # OPTION 3: Lenient parsing with fallback asset creation
             if not assets:
+                # If the translator explicitly recognised the file (can_handle=True),
+                # an empty asset list means the scan produced zero findings — that is a
+                # valid, successful outcome.  Only fall back to a placeholder asset when
+                # the translator did NOT own the file (format mismatch / parse failure).
+                translator_owns_file = False
+                try:
+                    translator_owns_file = translator is not None and translator.can_handle(processed_file_path)
+                except Exception:
+                    pass
+
+                if translator_owns_file:
+                    _scanner_name = locals().get('detected_scanner', scanner_type or 'unknown')
+                    logger.warning(
+                        "⚠️ Translator '%s' produced zero assets — scan file contains no findings. "
+                        "Completing successfully with 0 assets imported.",
+                        _scanner_name,
+                    )
+                    _assessment_name = assessment_name or self._generate_assessment_name(file_path, _scanner_name)
+                    return {
+                        'success': True,
+                        'assets_imported': 0,
+                        'vulnerabilities_imported': 0,
+                        'scanner_type': _scanner_name,
+                        'assessment_name': _assessment_name,
+                        'file_path': file_path,
+                        'message': 'Scan file processed successfully — no findings found',
+                    }
+
+
                 logger.warning(f"⚠️ No assets parsed from file, enabling fallback asset creation")
 
                 # Enable inventory asset creation for fallback

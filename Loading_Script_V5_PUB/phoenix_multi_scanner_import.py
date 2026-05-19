@@ -90,6 +90,48 @@ class ScannerTranslator(ABC):
         """Parse the scanner file and return Phoenix assets"""
         pass
     
+    @staticmethod
+    def promote_oci_labels(
+        target_info: Any,
+        label_to_attribute: Optional[Dict[str, str]] = None,
+    ) -> tuple:
+        """Split OCI image labels into Phoenix asset attributes and tags.
+
+        Labels whose keys appear in *label_to_attribute* are placed in the
+        returned attributes dict (with the mapped camelCase key).
+        All remaining non-empty labels become Phoenix tag dicts.
+
+        Returns:
+            (label_attributes, label_tags)
+        """
+        if label_to_attribute is None:
+            label_to_attribute = {
+                "org.opencontainers.image.base.digest": "imageDigest",
+                "org.opencontainers.image.base.name":   "imageName",
+            }
+
+        label_tags: List[Dict[str, str]] = []
+        label_attributes: Dict[str, str] = {}
+        labels = target_info.get('labels') if isinstance(target_info, dict) else None
+        if isinstance(labels, dict) and labels:
+            for k, v in labels.items():
+                if not k or v is None:
+                    continue
+                value_str = str(v).strip()
+                if not value_str:
+                    continue
+                if k in label_to_attribute:
+                    label_attributes[label_to_attribute[k]] = value_str
+                else:
+                    label_tags.append({"key": str(k), "value": value_str})
+            logger.info(
+                "OCI labels: %d -> attributes, %d -> tags",
+                len(label_attributes), len(label_tags),
+            )
+            logger.debug("Attribute keys from labels: %s", list(label_attributes.keys()))
+            logger.debug("Tag keys from labels: %s", [t['key'] for t in label_tags])
+        return label_attributes, label_tags
+
     def normalize_severity(self, severity: str) -> str:
         """Normalize severity to Phoenix format (1.0-10.0)"""
         if not severity:
@@ -321,21 +363,24 @@ class AnchoreGrypeTranslator(ScannerTranslator):
             image_name = target_info.get('userInput', target_info.get('imageID', 'unknown'))
         else:
             image_name = str(target_info) if target_info else 'unknown'
-        
+
+        label_attributes, label_tags = self.promote_oci_labels(target_info)
+
         # Create container asset
         asset_attributes = {
             'dockerfile': 'Dockerfile',
             'origin': 'anchore-grype',
-            'repository': image_name
+            'repository': image_name,
+            **label_attributes,
         }
-        
+
         asset = AssetData(
             asset_type="CONTAINER",
             attributes=asset_attributes,
             tags=self.tag_config.get_all_tags() + [
                 {"key": "scanner", "value": "anchore-grype"},
-                {"key": "source-type", "value": source_type}
-            ]
+                {"key": "source-type", "value": source_type},
+            ] + label_tags
         )
         
         # Process matches (vulnerabilities)
@@ -1937,7 +1982,6 @@ Examples:
                        help='Create assets even if no vulnerabilities found (with zero risk placeholder for inventory)')
     parser.add_argument('--verify-import', action='store_true', 
                        help='Verify imported assets and vulnerabilities exist in Phoenix after import')
-    
     # Configuration options
     parser.add_argument('--config', type=str, default='config_multi_scanner.ini', help='Configuration file (default: config_multi_scanner.ini)')
     parser.add_argument('--tag-file', type=str, help='Tag configuration file')
