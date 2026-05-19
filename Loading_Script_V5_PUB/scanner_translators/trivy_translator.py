@@ -45,8 +45,6 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 
 from phoenix_import_refactored import AssetData, VulnerabilityData
 from .base_translator import ScannerTranslator, ScannerConfig
@@ -57,18 +55,15 @@ logger = logging.getLogger(__name__)
 class TrivyTranslator(ScannerTranslator):
     """Translator for Trivy scanner results - handles multiple Trivy formats"""
 
-
     def can_handle(self, file_path: str, file_content: Any = None) -> bool:
         """Check if this is a Trivy scan file"""
         if not file_path.lower().endswith('.json'):
             return False
 
-
         try:
             if file_content is None:
                 with open(file_path, 'r') as f:
                     file_content = json.load(f)
-
 
             # Check for Trivy-specific structures
             if isinstance(file_content, dict):
@@ -80,13 +75,18 @@ class TrivyTranslator(ScannerTranslator):
                     resources = file_content.get('Resources', [])
                     if resources and 'Results' in resources[0]:
                         return True
+                # Empty scan: Trivy found no findings — Results key is absent but
+                # SchemaVersion identifies this as a Trivy file unambiguously.
+                if 'SchemaVersion' in file_content and (
+                    'ArtifactName' in file_content or 'ArtifactType' in file_content
+                ):
+                    return True
             elif isinstance(file_content, list):
                 # Legacy format: Root is an array with Target, Type, Vulnerabilities
                 if file_content and isinstance(file_content[0], dict):
                     first_item = file_content[0]
                     if 'Target' in first_item and ('Vulnerabilities' in first_item or 'Results' in first_item):
                         return True
-
 
             return False
         except Exception as e:
@@ -104,20 +104,7 @@ class TrivyTranslator(ScannerTranslator):
         the JSON content does not provide enough signal (legacy array format or
         unknown ArtifactType). Detected types win over the override.
         """
-
-    def parse_file(
-        self,
-        file_path: str,
-        asset_type_override: Optional[str] = None,
-    ) -> List[AssetData]:
-        """Parse Trivy scan results - supports multiple formats.
-
-        asset_type_override: CLI --asset-type value. Used as fallback only when
-        the JSON content does not provide enough signal (legacy array format or
-        unknown ArtifactType). Detected types win over the override.
-        """
         logger.info(f"Parsing Trivy scan file: {file_path}")
-
 
         try:
             with open(file_path, 'r') as f:
@@ -126,24 +113,25 @@ class TrivyTranslator(ScannerTranslator):
             logger.error(f"Failed to parse Trivy file: {e}")
             raise
 
-
         assets = []
-
 
         # Detect format and parse accordingly
         if isinstance(data, dict):
             if 'Results' in data:
                 # New format: Results[] → Vulnerabilities[] or Misconfigurations[]
                 assets = self._parse_new_format(data, file_path, asset_type_override)
-                assets = self._parse_new_format(data, file_path, asset_type_override)
             elif 'Resources' in data:
                 # Kubernetes format: Resources[] → Results[] → Misconfigurations[] or Vulnerabilities[]
                 assets = self._parse_kubernetes_format(data, file_path, asset_type_override)
-                assets = self._parse_kubernetes_format(data, file_path, asset_type_override)
+            else:
+                # Empty scan: valid Trivy output with no findings (Results key absent).
+                artifact_name = data.get('ArtifactName') or data.get('ArtifactPath') or Path(file_path).stem
+                logger.warning(
+                    "Trivy file '%s' contains no Results — scan produced zero findings for '%s'. Skipping.",
+                    file_path, artifact_name,
+                )
         elif isinstance(data, list):
             # Legacy format: Array of targets with Vulnerabilities[]
-            assets = self._parse_legacy_format(data, file_path, asset_type_override)
-
             assets = self._parse_legacy_format(data, file_path, asset_type_override)
 
         logger.info(f"Created {len(assets)} assets with {sum(len(a.findings) for a in assets)} vulnerabilities")
@@ -230,28 +218,12 @@ class TrivyTranslator(ScannerTranslator):
         """Parse new Trivy format: Results[] → Vulnerabilities[], Misconfigurations[], Secrets[]"""
         assets = []
 
-
         # Get artifact info — fall back to first Result's Target when ArtifactName is empty
         artifact_name = data.get('ArtifactName', '') or data.get('ArtifactPath', '')
-        results = data.get('Results', [])
         results = data.get('Results', [])
         if not artifact_name:
             artifact_name = results[0].get('Target', '') if results and isinstance(results[0], dict) else ''
         artifact_name = artifact_name or 'unknown'
-        artifact_type_raw = data.get('ArtifactType', '') or ''
-
-        asset_type, type_source = self._determine_asset_type(
-            artifact_type_raw, results, asset_type_override
-        )
-        asset_attributes = self._build_attributes_for_type(
-            asset_type,
-            artifact_name,
-            file_path,
-            extra={
-                'image_id': data.get('Metadata', {}).get('ImageID') if isinstance(data.get('Metadata'), dict) else None,
-                'image_name': data.get('ArtifactName'),
-            },
-        )
         artifact_type_raw = data.get('ArtifactType', '') or ''
 
         asset_type, type_source = self._determine_asset_type(
@@ -319,35 +291,11 @@ class TrivyTranslator(ScannerTranslator):
         when provided; otherwise default to CONTAINER (preserves prior
         behavior).
         """
-
-    def _parse_legacy_format(
-        self,
-        data: List,
-        file_path: str,
-        asset_type_override: Optional[str] = None,
-    ) -> List[AssetData]:
-        """Parse legacy Trivy format: Array → Vulnerabilities[]
-
-        Legacy format carries no ArtifactType, so we honor the CLI override
-        when provided; otherwise default to CONTAINER (preserves prior
-        behavior).
-        """
         assets = []
-
 
         for item in data:
             target = item.get('Target', 'unknown')
             target_type = item.get('Type', 'unknown')
-
-            # Legacy items have no ArtifactType — pass empty string and an
-            # empty results list so _determine_asset_type takes the fallback
-            # branch (CLI override, else CONTAINER default).
-            asset_type, type_source = self._determine_asset_type(
-                '', [], asset_type_override
-            )
-            asset_attributes = self._build_attributes_for_type(
-                asset_type, target, file_path
-            )
 
             # Legacy items have no ArtifactType — pass empty string and an
             # empty results list so _determine_asset_type takes the fallback
@@ -401,35 +349,13 @@ class TrivyTranslator(ScannerTranslator):
         Kubernetes scans (top-level 'Resources') are unambiguously INFRA — the
         CLI override is ignored here because the data signal is unambiguous.
         """
-
-    def _parse_kubernetes_format(
-        self,
-        data: Dict,
-        file_path: str,
-        asset_type_override: Optional[str] = None,
-    ) -> List[AssetData]:
-        """Parse Kubernetes Trivy format: Resources[] → Results[] → Misconfigurations[]
-
-        Kubernetes scans (top-level 'Resources') are unambiguously INFRA — the
-        CLI override is ignored here because the data signal is unambiguous.
-        """
         assets = []
-
 
         resources = data.get('Resources', [])
         for resource in resources:
             namespace = resource.get('Namespace', 'default')
             kind = resource.get('Kind', 'unknown')
             name = resource.get('Name', 'unknown')
-
-            hostname = f"{name}.{namespace}.k8s"
-            asset_attributes = self._build_attributes_for_type(
-                'INFRA', hostname, file_path
-            )
-            # Preserve historical attributes useful for downstream lookups.
-            asset_attributes['origin'] = 'trivy-kubernetes'
-            asset_attributes['repository'] = f"{namespace}/{kind}/{name}"
-
 
             hostname = f"{name}.{namespace}.k8s"
             asset_attributes = self._build_attributes_for_type(
@@ -479,28 +405,23 @@ class TrivyTranslator(ScannerTranslator):
 
         return assets
 
-
     def _create_vulnerability(self, vuln_data: Dict, target: str) -> Optional[Dict]:
         """Create a vulnerability finding from Trivy data"""
         vuln_id = vuln_data.get('VulnerabilityID', '')
         if not vuln_id:
             return None
 
-
         # Get severity
         severity = vuln_data.get('Severity', 'UNKNOWN')
-
 
         # Get package info
         pkg_name = vuln_data.get('PkgName', '')
         installed_version = vuln_data.get('InstalledVersion', '')
         fixed_version = vuln_data.get('FixedVersion', '')
 
-
         # Get dates
         published_date = vuln_data.get('PublishedDate', '')
         last_modified_date = vuln_data.get('LastModifiedDate', '')
-
 
         # Format published date to Phoenix format (ISO-8601 with T separator)
         if published_date:
@@ -510,17 +431,14 @@ class TrivyTranslator(ScannerTranslator):
             except:
                 published_date = None
 
-
         # Get CWE IDs
         cwe_ids = vuln_data.get('CweIDs', [])
-        
 
         # Create remedy
         if fixed_version:
             remedy = f"Update {pkg_name} from {installed_version} to {fixed_version}"
         else:
             remedy = "No fix available"
-        
 
         vulnerability = VulnerabilityData(
             name=vuln_id,
@@ -542,7 +460,6 @@ class TrivyTranslator(ScannerTranslator):
                 'last_modified_date': last_modified_date
             }
         )
-
 
         return vulnerability.__dict__
 
@@ -614,10 +531,8 @@ class TrivyTranslator(ScannerTranslator):
         if not vuln_id:
             return None
 
-
         # Get severity
         severity = misconfig_data.get('Severity', 'UNKNOWN')
-
 
         vulnerability = VulnerabilityData(
             name=vuln_id,
@@ -637,7 +552,6 @@ class TrivyTranslator(ScannerTranslator):
                 'query': misconfig_data.get('Query', '')
             }
         )
-
 
         return vulnerability.__dict__
 
