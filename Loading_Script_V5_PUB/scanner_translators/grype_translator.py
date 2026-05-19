@@ -13,6 +13,12 @@ Scanner Detection:
 - Checks for 'matches' array with vulnerability/artifact structure
 
 Asset Type: CONTAINER
+
+Tagging / Attributes:
+- org.opencontainers.image.base.digest -> asset_attributes['imageDigest']
+- org.opencontainers.image.base.name   -> asset_attributes['imageName']
+- All other labels -> Phoenix asset tags (verbatim key/value).
+- Missing / null / empty labels are tolerated; the translator never crashes.
 """
 
 import json
@@ -93,12 +99,41 @@ class GrypeTranslator(ScannerTranslator):
             image_name = target_info.get('userInput', target_info.get('imageID', 'unknown'))
         else:
             image_name = str(target_info) if target_info else 'unknown'
-        
+
+        # Specific OCI labels that map to Phoenix asset attributes (not tags)
+        LABEL_TO_ATTRIBUTE = {
+            "org.opencontainers.image.base.digest": "imageDigest",
+            "org.opencontainers.image.base.name":   "imageName",
+        }
+
+        # Promote OCI labels: mapped labels -> asset attributes, rest -> tags
+        label_tags: List[Dict[str, str]] = []
+        label_attributes: Dict[str, str] = {}
+        labels = target_info.get('labels') if isinstance(target_info, dict) else None
+        if isinstance(labels, dict) and labels:
+            for k, v in labels.items():
+                if not k or v is None:
+                    continue
+                value_str = str(v).strip()
+                if not value_str:
+                    continue
+                if k in LABEL_TO_ATTRIBUTE:
+                    label_attributes[LABEL_TO_ATTRIBUTE[k]] = value_str
+                else:
+                    label_tags.append({"key": str(k), "value": value_str})
+            logger.info(
+                "Grype: %d OCI labels -> attributes, %d -> tags",
+                len(label_attributes), len(label_tags),
+            )
+            logger.debug("Grype attribute keys from labels: %s", list(label_attributes.keys()))
+            logger.debug("Grype tag keys from labels: %s", [t['key'] for t in label_tags])
+
         # Create container asset
         asset_attributes = {
             'dockerfile': 'Dockerfile',
             'origin': 'anchore-grype',
-            'repository': image_name
+            'repository': image_name,
+            **label_attributes,
         }
         
         asset = AssetData(
@@ -106,8 +141,8 @@ class GrypeTranslator(ScannerTranslator):
             attributes=asset_attributes,
             tags=self.tag_config.get_all_tags() + [
                 {"key": "scanner", "value": "anchore-grype"},
-                {"key": "source-type", "value": source_type}
-            ]
+                {"key": "source-type", "value": source_type},
+            ] + label_tags
         )
         
         # Process matches (vulnerabilities)

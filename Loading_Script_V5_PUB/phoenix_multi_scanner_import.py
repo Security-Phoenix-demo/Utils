@@ -321,21 +321,48 @@ class AnchoreGrypeTranslator(ScannerTranslator):
             image_name = target_info.get('userInput', target_info.get('imageID', 'unknown'))
         else:
             image_name = str(target_info) if target_info else 'unknown'
-        
+
+        # Specific OCI labels that map to Phoenix asset attributes (not tags)
+        _LABEL_TO_ATTRIBUTE = {
+            "org.opencontainers.image.base.digest": "imageDigest",
+            "org.opencontainers.image.base.name":   "imageName",
+        }
+
+        # Promote OCI labels: mapped labels -> asset attributes, rest -> tags
+        label_tags: List[Dict[str, str]] = []
+        label_attributes: Dict[str, str] = {}
+        labels = target_info.get('labels') if isinstance(target_info, dict) else None
+        if isinstance(labels, dict) and labels:
+            for k, v in labels.items():
+                if not k or v is None:
+                    continue
+                value_str = str(v).strip()
+                if not value_str:
+                    continue
+                if k in _LABEL_TO_ATTRIBUTE:
+                    label_attributes[_LABEL_TO_ATTRIBUTE[k]] = value_str
+                else:
+                    label_tags.append({"key": str(k), "value": value_str})
+            logger.info(
+                "Grype: %d OCI labels -> attributes, %d -> tags",
+                len(label_attributes), len(label_tags),
+            )
+
         # Create container asset
         asset_attributes = {
             'dockerfile': 'Dockerfile',
             'origin': 'anchore-grype',
-            'repository': image_name
+            'repository': image_name,
+            **label_attributes,
         }
-        
+
         asset = AssetData(
             asset_type="CONTAINER",
             attributes=asset_attributes,
             tags=self.tag_config.get_all_tags() + [
                 {"key": "scanner", "value": "anchore-grype"},
-                {"key": "source-type", "value": source_type}
-            ]
+                {"key": "source-type", "value": source_type},
+            ] + label_tags
         )
         
         # Process matches (vulnerabilities)
@@ -1937,7 +1964,6 @@ Examples:
                        help='Create assets even if no vulnerabilities found (with zero risk placeholder for inventory)')
     parser.add_argument('--verify-import', action='store_true', 
                        help='Verify imported assets and vulnerabilities exist in Phoenix after import')
-    
     # Configuration options
     parser.add_argument('--config', type=str, default='config_multi_scanner.ini', help='Configuration file (default: config_multi_scanner.ini)')
     parser.add_argument('--tag-file', type=str, help='Tag configuration file')
