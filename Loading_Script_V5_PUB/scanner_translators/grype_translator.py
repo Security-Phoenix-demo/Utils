@@ -15,9 +15,9 @@ Scanner Detection:
 Asset Type: CONTAINER
 
 Tagging / Attributes:
-- org.opencontainers.image.base.digest -> asset_attributes['imageDigest']
-- org.opencontainers.image.base.name   -> asset_attributes['imageName']
-- All other labels -> Phoenix asset tags (verbatim key/value).
+- All labels -> Phoenix asset tags (verbatim key/value).
+- org.opencontainers.image.base.digest -> tag + asset_attributes['baseImageDigest']
+- org.opencontainers.image.base.name   -> tag + asset_attributes['baseImageName']
 - Missing / null / empty labels are tolerated; the translator never crashes.
 """
 
