@@ -863,7 +863,7 @@ class EnhancedMultiScannerImportManager:
             logger.debug(f"Converted file path to absolute: {file_path}")
 
         # Check if we received a translator object directly
-        from phoenix_multi_scanner_import import ScannerTranslator
+        from scanner_translators.base_translator import ScannerTranslator
         if isinstance(translator_or_name, ScannerTranslator):
             # Use the provided translator directly
             translator = translator_or_name

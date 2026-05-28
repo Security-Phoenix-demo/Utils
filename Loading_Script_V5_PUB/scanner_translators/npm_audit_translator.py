@@ -44,8 +44,13 @@ class NpmAuditTranslator(ScannerTranslator):
             # npm audit v7+ format has 'vulnerabilities' dict
             # npm audit v6 format has 'advisories' dict and 'actions' array
             if isinstance(file_content, dict):
+                # CycloneDX also has vulnerabilities + metadata; exclude it
+                if file_content.get('bomFormat') == 'CycloneDX':
+                    return False
                 if 'vulnerabilities' in file_content and 'metadata' in file_content:
-                    return True
+                    vulnerabilities = file_content.get('vulnerabilities')
+                    if isinstance(vulnerabilities, dict):
+                        return True
                 if 'advisories' in file_content and 'actions' in file_content:
                     return True
                 # npm audit fix --dry-run format
