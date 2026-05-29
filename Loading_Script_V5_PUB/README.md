@@ -1550,6 +1550,7 @@ cat logs/errors_<timestamp>.log
 | [`IMPLEMENTATION_COMPLETE_ALL_SCANNERS.md`](IMPLEMENTATION_COMPLETE_ALL_SCANNERS.md) | Technical implementation details |
 | [`YAML_MAPPING_ANALYSIS.md`](YAML_MAPPING_ANALYSIS.md) | YAML architecture explanation |
 | [`JSON_AND_GENERIC_IMPORTER_MAPPING_GUIDE.md`](JSON_AND_GENERIC_IMPORTER_MAPPING_GUIDE.md) | Field mapping guide for `drheader` and `generic` importers |
+| [`JSON_BASED_ASSESSMENT_UPLOAD_GUIDE.md`](JSON_BASED_ASSESSMENT_UPLOAD_GUIDE.md) | JSON format spec, baseline vs delta incremental uploads, and assessment workflows |
 | [`DELIVERABLES.md`](DELIVERABLES.md) | Project deliverables summary |
 
 ### Additional Resources

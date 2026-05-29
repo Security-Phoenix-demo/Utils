@@ -64,6 +64,7 @@ python actions/upload_single.py \
 ### Getting Started
 - **[README_PHOENIX_SCANNER.md](README_PHOENIX_SCANNER.md)** - Master overview of both components
 - **[phoenix-scanner-client/QUICKSTART.md](phoenix-scanner-client/QUICKSTART.md)** - 5-minute setup guide
+- **[JSON_BASED_ASSESSMENT_UPLOAD_GUIDE.md](JSON_BASED_ASSESSMENT_UPLOAD_GUIDE.md)** - JSON format, baseline/delta uploads, and assessment workflows
 
 ### Service Documentation
 - [Service README](phoenix-scanner-service/README.md) - Complete service guide
