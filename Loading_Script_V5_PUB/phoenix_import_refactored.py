@@ -1043,7 +1043,9 @@ class PhoenixAPIClient:
                 if 'reference_ids' in phoenix_finding:
                     phoenix_finding['referenceIds'] = phoenix_finding.pop('reference_ids')
                 if 'published_date_time' in phoenix_finding:
-                    phoenix_finding['publishedDateTime'] = phoenix_finding.pop('published_date_time')
+                    published = phoenix_finding.pop('published_date_time')
+                    if published and str(published).strip():
+                        phoenix_finding['publishedDateTime'] = published
 
                 # Phoenix expects severity as a float (e.g. 5.0), not a string ("5.0").
                 # VulnerabilityData stores it as str internally; cast it here at the
