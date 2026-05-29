@@ -419,16 +419,16 @@ class TrivyTranslator(ScannerTranslator):
         installed_version = vuln_data.get('InstalledVersion', '')
         fixed_version = vuln_data.get('FixedVersion', '')
 
-        # Get dates
-        published_date = vuln_data.get('PublishedDate', '')
+        # Get dates — omit blank strings; Phoenix BE rejects publishedDateTime=""
+        published_date_raw = vuln_data.get('PublishedDate')
         last_modified_date = vuln_data.get('LastModifiedDate', '')
 
-        # Format published date to Phoenix format (ISO-8601 with T separator)
-        if published_date:
+        published_date = None
+        if published_date_raw and str(published_date_raw).strip():
             try:
-                dt = datetime.fromisoformat(published_date.replace('Z', '+00:00'))
+                dt = datetime.fromisoformat(str(published_date_raw).replace('Z', '+00:00'))
                 published_date = dt.strftime("%Y-%m-%dT%H:%M:%S")
-            except:
+            except Exception:
                 published_date = None
 
         # Get CWE IDs
@@ -446,7 +446,7 @@ class TrivyTranslator(ScannerTranslator):
             remedy=remedy,
             severity=self.normalize_severity(severity),
             location=f"{pkg_name}@{installed_version}" if pkg_name else target,
-            reference_ids=[vuln_id] if vuln_id.startswith('CVE-') else [],
+            reference_ids=[vuln_id] if vuln_id else [],
             published_date_time=published_date,
             details={
                 'package_name': pkg_name,
