@@ -104,7 +104,7 @@ class GrypeTranslator(ScannerTranslator):
 
         # Create container asset
         asset_attributes = {
-            'dockerfile': 'Dockerfile',
+            'dockerfile': image_name,
             'origin': 'anchore-grype',
             'repository': image_name,
             **label_attributes,
