@@ -119,7 +119,12 @@ class GrypeTranslator(ScannerTranslator):
         target_info = source.get('target', {})
 
         if isinstance(target_info, dict):
-            image_name = target_info.get('userInput', target_info.get('imageID', 'unknown'))
+            image_name = (
+                target_info.get('userInput')
+                or target_info.get('name')
+                or target_info.get('imageID')
+                or 'unknown'
+            )
         else:
             image_name = str(target_info) if target_info else 'unknown'
 

@@ -93,6 +93,23 @@ class TrivyTranslator(ScannerTranslator):
             logger.debug(f"TrivyTranslator.can_handle failed: {e}")
             return False
 
+    @staticmethod
+    def _strip_registry(artifact_name: str) -> str:
+        """Strip private registry prefix from image name.
+
+        'docker-hub.etraveli.net/cfcm/edvin-cmx:tag' → 'cfcm/edvin-cmx:tag'
+        Leaves names that already look like 'library/image' or 'image:tag' untouched.
+        """
+        if not artifact_name or artifact_name == 'unknown':
+            return artifact_name
+        parts = artifact_name.split('/', 1)
+        if len(parts) == 2:
+            prefix = parts[0]
+            # A registry hostname contains a dot or a port (colon)
+            if '.' in prefix or ':' in prefix:
+                return parts[1]
+        return artifact_name
+
     def parse_file(
         self,
         file_path: str,
@@ -223,7 +240,7 @@ class TrivyTranslator(ScannerTranslator):
         results = data.get('Results', [])
         if not artifact_name:
             artifact_name = results[0].get('Target', '') if results and isinstance(results[0], dict) else ''
-        artifact_name = artifact_name or 'unknown'
+        artifact_name = self._strip_registry(artifact_name or 'unknown')
         artifact_type_raw = data.get('ArtifactType', '') or ''
 
         asset_type, type_source = self._determine_asset_type(
