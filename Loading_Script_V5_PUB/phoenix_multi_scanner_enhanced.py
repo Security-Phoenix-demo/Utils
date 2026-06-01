@@ -1241,13 +1241,12 @@ Examples:
         # Load tag configuration (explicit tag file takes priority)
         if args.tag_file:
             logger.info(f"🏷️ Loading tag configuration from: {args.tag_file}")
-            manager.tag_config = manager.load_tag_configuration(args.tag_file)
-        else:
-            manager.tag_config = manager.load_tag_configuration()
+            from phoenix_import_refactored import PhoenixImportManager
+            manager.tag_config = PhoenixImportManager.load_tag_configuration(manager, args.tag_file)
+        # else: tag_config already set by _load_configuration_safe() in __init__
 
         # Keep enhanced importer aligned with current tag configuration
         manager.enhanced_importer.tag_config = manager.tag_config
-
         # Configure batching parameters with proper hierarchy:
         # 1. Command-line args (if explicitly provided)
         # 2. Config file values

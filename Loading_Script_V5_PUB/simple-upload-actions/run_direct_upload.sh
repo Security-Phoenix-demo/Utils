@@ -41,17 +41,20 @@ if [[ -z "${ASSESSMENT_NAME}" ]]; then
   ASSESSMENT_NAME="ci-direct-upload-${TIMESTAMP}"
 fi
 
-python3 simple-upload-actions/generate_pipeline_tag_file.py \
-  --output pipeline-tags.yaml \
-  --metadata-json pipeline-metadata.json
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PARENT_DIR="$(dirname "${SCRIPT_DIR}")"
 
-python3 phoenix_multi_scanner_enhanced.py \
+python3 "${SCRIPT_DIR}/generate_pipeline_tag_file.py" \
+  --output "${PARENT_DIR}/pipeline-tags.yaml" \
+  --metadata-json "${PARENT_DIR}/pipeline-metadata.json"
+
+python3 "${PARENT_DIR}/phoenix_multi_scanner_enhanced.py" \
   --file "${SCAN_FILE}" \
   --scanner "${SCANNER_TYPE}" \
   --asset-type "${ASSET_TYPE}" \
   --import-type "${IMPORT_TYPE}" \
   --assessment "${ASSESSMENT_NAME}" \
-  --tag-file pipeline-tags.yaml \
+  --tag-file "${PARENT_DIR}/pipeline-tags.yaml" \
   --fix-data \
   --enable-batching \
   --verify-import

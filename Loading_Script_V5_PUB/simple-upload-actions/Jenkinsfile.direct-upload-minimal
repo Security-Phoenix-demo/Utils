@@ -6,10 +6,14 @@ pipeline {
         string(name: 'SCANNER_TYPE', defaultValue: 'auto', description: 'Scanner type or auto')
     }
 
+    parameters {
+        string(name: 'PHOENIX_API_BASE_URL', defaultValue: '', description: 'Phoenix API base URL (e.g. https://api.appsecphx.io)')
+    }
+
     environment {
         PHOENIX_CLIENT_ID = credentials('phoenix-client-id')
         PHOENIX_CLIENT_SECRET = credentials('phoenix-client-secret')
-        PHOENIX_API_BASE_URL = credentials('phoenix-api-base-url')
+        PHOENIX_API_BASE_URL = "${params.PHOENIX_API_BASE_URL}"
     }
 
     stages {

@@ -1,5 +1,37 @@
 # Changelog - Phoenix Multi-Scanner Import Tool
 
+## [3.4.0] - 2026-06-01 - **Grype CycloneDX Support & CycloneDX CONTAINER Mode**
+
+### ✨ Added
+
+#### Grype CycloneDX JSON support (`grype_translator.py`)
+- Grype's `--output cyclonedx-json` format (CycloneDX 1.4–1.6) is now fully parsed by `GrypeTranslator` — no `--scanner cyclonedx` workaround needed.
+- Detection logic: checks `metadata.tools.components[].name == "grype"` first; falls back to filename containing `"grype"` when metadata is absent.
+- Image/asset name resolved from `metadata.component.name`; falls back to filename stem with scanner suffix stripped (e.g. `edvin-cmx-2026.5.28-453-grype.json` → `edvin-cmx-2026.5.28-453`).
+- Vulnerabilities mapped from CycloneDX `vulnerabilities[]` array; affected component details (name, version, purl) resolved via `bom-ref` index.
+- CVSSv3 severity and score preferred; falls back to first available rating.
+- OCI label promotion (`promote_oci_labels`) retained for native JSON path.
+
+#### CycloneDX CONTAINER asset mode (`cyclonedx_translator.py`)
+- Pass `--asset-type CONTAINER` to produce a single CONTAINER asset per scan target instead of one BUILD asset per vulnerable component.
+- CONTAINER asset uses `dockerfile: "Dockerfile"` + `repository: <target_name>` attributes required by the Phoenix API.
+- Target name resolved from `metadata.component.name`; falls back to filename stem.
+- BUILD mode (default) unchanged; project name now falls back to filename stem when `metadata.component` is absent.
+
+### 🔧 Fixed
+
+- `grype_translator.py`: files in CycloneDX format were mis-detected as `npmaudit` by the auto-detector, causing API 400 errors (`At least one of Dockerfile or Repository is required`). The translator now claims CycloneDX grype files before the npm-audit fallback fires.
+- `cyclonedx_translator.py`: importing a CycloneDX SBOM as CONTAINER previously failed with the same 400 error because `buildFile` attributes were sent instead of `dockerfile`/`repository`.
+
+### 📋 Files Changed
+
+| File | Change |
+|------|--------|
+| `scanner_translators/grype_translator.py` | Added `_is_cyclonedx_from_grype`, `_parse_cyclonedx`, `_parse_native`; updated `can_handle` and `parse_file` |
+| `scanner_translators/cyclonedx_translator.py` | Added `_parse_json_as_container`, `_resolve_name_from_file`; updated `parse_file` to honour `--asset-type CONTAINER`; `_parse_json` now accepts `file_path` for name fallback |
+
+---
+
 ## [3.3.0] - 2026-01-31 - **Security Updates & Code Sync** 🔒
 
 ### 🔒 **CRITICAL - Security Vulnerability Fixes**

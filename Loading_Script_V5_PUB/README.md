@@ -92,7 +92,7 @@ The tool uses a **hybrid translation system**:
 | **Acunetix360 Scan** | WEB | Enterprise web vulnerability scanner |
 | **Anchore Engine Scan** | CONTAINER | Container security analysis |
 | **Anchore Enterprise Policy Check** | CONTAINER | Enterprise container policy compliance |
-| **Anchore Grype** | CONTAINER | Vulnerability scanner for container images |
+| **Anchore Grype** | CONTAINER | Vulnerability scanner for container images (native JSON + CycloneDX JSON) |
 | **AnchoreCTL Policies Report** | CONTAINER | Anchore policy evaluation reports |
 | **AnchoreCTL Vuln Report** | CONTAINER | Anchore vulnerability reports |
 | **AppSpider Scan** | WEB | Dynamic application security testing |
@@ -130,7 +130,7 @@ The tool uses a **hybrid translation system**:
 | **Crashtest Security JSON File** | WEB | Continuous web security testing |
 | **Crashtest Security XML File** | WEB | Web security testing results |
 | **CredScan Scan** | CODE | Credential leak detection |
-| **CycloneDX Scan** | BUILD | Software Bill of Materials (SBOM) |
+| **CycloneDX Scan** | BUILD / CONTAINER | Software Bill of Materials (SBOM); use `--asset-type CONTAINER` for container targets |
 | **DawnScanner Scan** | CODE | Ruby security scanner |
 | **Dependency Check Scan** | BUILD | OWASP dependency vulnerability checker |
 | **Dependency Track Finding Packaging Format (FPF) Export** | BUILD | Dependency tracking format |
@@ -667,7 +667,7 @@ python3 phoenix_multi_scanner_enhanced.py \
 
 ```bash
 # 1. Navigate to directory
-cd Utils/Loading_Script_V4
+cd Utils/Loading_Script_V5_PUB
 
 # 2. Install dependencies (if needed)
 pip install -r requirements.txt  # or manually: pip install requests pyyaml
@@ -1202,7 +1202,7 @@ Scanner File (JSON/XML/CSV)
 ### Directory Structure (v5.0 - Modular)
 
 ```
-Loading_Script_V4/
+Loading_Script_V5_PUB/
 ├── 📄 Main Script
 │   └── phoenix_multi_scanner_enhanced.py   # Main entry point (1,123 lines) 🔄 Updated
 │

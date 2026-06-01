@@ -41,9 +41,9 @@ python3 phoenix_multi_scanner_enhanced.py \
 
 ```ini
 [phoenix]
-client_id = 329078ee-a0d0-4e60-9b10-111806ec8941
-client_secret = pat1_d08fc456da6043ab8b6f8337397a4f869e3b63bcbec24f9b972c8754672a3fba
-api_base_url = https://api.demo.appsecphx.io
+client_id = your-client-id-here
+client_secret = pat1_your-personal-access-token-here
+api_base_url = https://api.your-tenant.appsecphx.io
 ```
 
 ---

@@ -9,15 +9,17 @@ This document describes the Python dependency requirements for the Phoenix Multi
 **Purpose:** Core dependencies needed to run the tool in production
 
 **Dependencies:**
-- `requests>=2.31.0` - HTTP client for Phoenix API
-- `PyYAML>=6.0.1` - YAML parser for scanner configurations
+- `requests>=2.32.4,<3.0.0` - HTTP client for Phoenix API (CVE-2024-47081 fix)
+- `PyYAML>=6.0.1,<7.0.0` - YAML parser for scanner configurations
+- `colorama>=0.4.6,<1.0.0` - Colored terminal output
+- `python-dateutil>=2.8.2,<3.0.0` - Improved date handling
 
 **Installation:**
 ```bash
 pip install -r requirements.txt
 ```
 
-**Size:** Minimal (only 2 packages)
+**Size:** Minimal (4 packages)
 **Use Case:** Production deployments, CI/CD pipelines, containerized environments
 
 ---
@@ -60,14 +62,14 @@ pip install -r requirements-dev.txt
 
 ### Core Production Dependencies
 
-#### requests (>=2.31.0)
+#### requests (>=2.32.4,<3.0.0)
 - **Purpose:** HTTP client library
 - **Used For:** 
   - Phoenix Security API authentication
   - Asset/vulnerability import REST calls
   - Retry logic with exponential backoff
   - JSON payload handling
-- **Why This Version:** Security fixes and modern API support
+- **Why This Version:** CVE-2024-47081 (.netrc credentials leak) fix; <3.0.0 for API stability
 
 #### PyYAML (>=6.0.1)
 - **Purpose:** YAML parsing library
@@ -224,7 +226,7 @@ cache(maxCacheSize: 250, caches: [
 
 #### Issue: "No module named 'requests'"
 ```bash
-pip install requests>=2.31.0
+pip install "requests>=2.32.4,<3.0.0"
 ```
 
 #### Issue: "No module named 'yaml'"
@@ -326,7 +328,7 @@ pip install -r requirements.lock
 
 | Aspect | Details |
 |--------|---------|
-| **Total Dependencies** | 2 (requests, PyYAML) |
+| **Total Dependencies** | 4 (requests, PyYAML, colorama, python-dateutil) |
 | **Python Version** | 3.8+ |
 | **Installation Time** | < 1 minute |
 | **Size** | ~5 MB total |
