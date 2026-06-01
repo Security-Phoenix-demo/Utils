@@ -1238,6 +1238,16 @@ Examples:
         # Initialize enhanced manager
         manager = EnhancedMultiScannerImportManager(args.config)
 
+        # Load tag configuration (explicit tag file takes priority)
+        if args.tag_file:
+            logger.info(f"🏷️ Loading tag configuration from: {args.tag_file}")
+            manager.tag_config = manager.load_tag_configuration(args.tag_file)
+        else:
+            manager.tag_config = manager.load_tag_configuration()
+
+        # Keep enhanced importer aligned with current tag configuration
+        manager.enhanced_importer.tag_config = manager.tag_config
+
         # Configure batching parameters with proper hierarchy:
         # 1. Command-line args (if explicitly provided)
         # 2. Config file values

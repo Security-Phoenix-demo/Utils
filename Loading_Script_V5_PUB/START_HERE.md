@@ -64,6 +64,7 @@ python actions/upload_single.py \
 ### Getting Started
 - **[README_PHOENIX_SCANNER.md](README_PHOENIX_SCANNER.md)** - Master overview of both components
 - **[phoenix-scanner-client/QUICKSTART.md](phoenix-scanner-client/QUICKSTART.md)** - 5-minute setup guide
+- **[JSON_BASED_ASSESSMENT_UPLOAD_GUIDE.md](JSON_BASED_ASSESSMENT_UPLOAD_GUIDE.md)** - JSON format, baseline/delta uploads, and assessment workflows
 
 ### Service Documentation
 - [Service README](phoenix-scanner-service/README.md) - Complete service guide
@@ -81,6 +82,7 @@ python actions/upload_single.py \
 - [GitHub Actions](phoenix-scanner-client/ci/github/phoenix-scanner.yml)
 - [Jenkins Pipeline](phoenix-scanner-client/ci/jenkins/Jenkinsfile)
 - [Azure DevOps](phoenix-scanner-client/ci/azure/azure-pipelines.yml)
+- [Simple Direct Upload Actions](simple-upload-actions/README.md) - Option 2 templates for direct CI/CD upload using `phoenix_multi_scanner_enhanced.py` plus pipeline metadata tagging
 
 ## 🎯 Common Use Cases
 
@@ -268,6 +270,7 @@ docker-compose ps
 3. **Setup the Client**: `cd phoenix-scanner-client && ./setup.sh`
 4. **Upload First Scan**: `python actions/upload_single.py --file scan.json`
 5. **Integrate with CI/CD**: Copy examples from `phoenix-scanner-client/ci/`
+6. **Direct CI/CD Option (no service/client stack)**: Start from `simple-upload-actions/README.md`
 
 ## 📞 Support
 
