@@ -29,7 +29,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from phoenix_import_refactored import AssetData, VulnerabilityData
+from finding_reference_normalizer import (
+    _dedupe_preserve_order,
+    _split_cwes_from_refs,
+    extract_vulnerability_ids_from_text,
+    extract_vulnerability_ids_from_urls,
+    normalize_cwe_list,
+)
 from .base_translator import ScannerTranslator, ScannerConfig
+from .grype_translator import build_packages_from_component
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +137,11 @@ class CycloneDXTranslator(ScannerTranslator):
                 break
         return stem
 
+    @staticmethod
+    def _format_component_location(name: str, version: str = "") -> str:
+        """Phoenix subcomponent location: always component@version (Grype-aligned)."""
+        return f"{(name or '').strip()}@{(version or '').strip()}"
+
     # ------------------------------------------------------------------
     # CONTAINER mode: one asset per scan target
     # ------------------------------------------------------------------
@@ -140,7 +153,8 @@ class CycloneDXTranslator(ScannerTranslator):
         comes from metadata.component.name, falling back to the filename stem.
         """
         metadata = data.get('metadata', {})
-        target_name = metadata.get('component', {}).get('name', '').strip()
+        override_name = getattr(self, 'asset_name_override', None)
+        target_name = (override_name or metadata.get('component', {}).get('name', '')).strip()
         if not target_name:
             target_name = self._resolve_name_from_file(file_path)
 
@@ -182,15 +196,22 @@ class CycloneDXTranslator(ScannerTranslator):
                             comp = v
                             break
 
-            vuln_data = self._parse_vulnerability_json(vuln, comp.get('name', target_name))
+            comp_name = comp.get('name', target_name) if comp else target_name
+            comp_version = comp.get('version', '') if comp else ''
+            vuln_data = self._parse_vulnerability_json(vuln, comp_name, comp_version)
             if vuln_data:
                 if comp:
                     vuln_data.setdefault('details', {})
                     vuln_data['details']['package_name'] = comp.get('name', '')
                     vuln_data['details']['package_version'] = comp.get('version', '')
                     vuln_data['details']['package_purl'] = comp.get('purl', '')
+                self._attach_component_packages(vuln_data, comp)
+                packages = vuln_data.pop("packages", None)
                 vuln_obj = VulnerabilityData(**vuln_data)
-                asset.findings.append(vuln_obj.__dict__)
+                finding = vuln_obj.__dict__
+                if packages:
+                    finding["packages"] = packages
+                asset.findings.append(finding)
 
         return [self.ensure_asset_has_findings(asset)]
 
@@ -247,24 +268,68 @@ class CycloneDXTranslator(ScannerTranslator):
             )
 
             for vuln in vulns:
-                vuln_data = self._parse_vulnerability_json(vuln, comp_name)
+                vuln_data = self._parse_vulnerability_json(vuln, comp_name, comp_version)
                 if vuln_data:
+                    self._attach_component_packages(vuln_data, component)
+                    packages = vuln_data.pop("packages", None)
                     vuln_obj = VulnerabilityData(**vuln_data)
-                    asset.findings.append(vuln_obj.__dict__)
+                    finding = vuln_obj.__dict__
+                    if packages:
+                        finding["packages"] = packages
+                    asset.findings.append(finding)
 
             if asset.findings:
                 assets.append(self.ensure_asset_has_findings(asset))
 
         return assets
 
-    def _parse_vulnerability_json(self, vuln: Dict, component: str) -> Optional[Dict]:
+    @staticmethod
+    def _attach_component_packages(vuln_data: Dict, component: Dict) -> None:
+        packages = build_packages_from_component(component)
+        if packages:
+            vuln_data["packages"] = packages
+
+    @staticmethod
+    def _collect_cyclonedx_reference_ids(vuln: Dict) -> List[str]:
+        refs: List[str] = []
+        vuln_id = (vuln.get("id") or "").strip()
+        if vuln_id:
+            refs.append(vuln_id)
+
+        for ref in vuln.get("references", []) or []:
+            if isinstance(ref, dict):
+                ref_id = (ref.get("id") or "").strip()
+                if ref_id:
+                    refs.append(ref_id)
+
+        advisory_urls = []
+        for adv in vuln.get("advisories", []) or []:
+            if isinstance(adv, dict):
+                if adv.get("url"):
+                    advisory_urls.append(adv["url"])
+                if adv.get("id"):
+                    refs.append(str(adv["id"]).strip())
+            elif adv:
+                advisory_urls.append(str(adv))
+        refs.extend(extract_vulnerability_ids_from_urls(advisory_urls))
+
+        for alias in vuln.get("aliases", []) or []:
+            text = str(alias).strip()
+            if text:
+                refs.append(text)
+        refs.extend(extract_vulnerability_ids_from_text(vuln.get("description", "")))
+
+        return _dedupe_preserve_order(refs)
+
+    def _parse_vulnerability_json(self, vuln: Dict, component_name: str, component_version: str = "") -> Optional[Dict]:
         """Parse a CycloneDX vulnerability"""
         try:
             vuln_id = vuln.get('id', 'UNKNOWN')
             if not vuln_id:
                 return None
 
-            description = vuln.get('description', f"Vulnerability {vuln_id} in {component}")
+            location = self._format_component_location(component_name, component_version)
+            description = vuln.get('description', f"Vulnerability {vuln_id} in {component_name}")
             if len(description) > 500:
                 description = description[:497] + "..."
 
@@ -285,21 +350,20 @@ class CycloneDXTranslator(ScannerTranslator):
             if len(recommendation) > 500:
                 recommendation = recommendation[:497] + "..."
 
-            cwes = []
-            if 'cwes' in vuln:
-                cwes = [str(cwe) for cwe in vuln['cwes']]
+            cwes = normalize_cwe_list(vuln.get("cwes"))
+            reference_ids = self._collect_cyclonedx_reference_ids(vuln)
+            clean_refs, extracted_cwes = _split_cwes_from_refs(reference_ids)
+            cwes = _dedupe_preserve_order(cwes + extracted_cwes)
 
             vuln_dict = {
                 'name': vuln_id,
                 'description': description,
                 'remedy': recommendation,
                 'severity': severity,
-                'location': component,
-                'reference_ids': [vuln_id]
+                'location': location,
+                'reference_ids': clean_refs,
+                'cwes': cwes,
             }
-
-            if cwes:
-                vuln_dict['cwes'] = cwes
 
             if cvss_score:
                 vuln_dict['details'] = {'cvss_score': cvss_score}

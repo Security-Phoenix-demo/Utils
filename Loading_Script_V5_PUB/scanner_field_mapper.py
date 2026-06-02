@@ -22,6 +22,8 @@ import csv
 from datetime import datetime
 import logging
 
+from finding_reference_normalizer import normalize_finding_reference_fields
+
 logger = logging.getLogger(__name__)
 
 
@@ -429,8 +431,8 @@ class FieldMapper:
             vulnerability['severity'] = "5.0"
         if 'location' not in vulnerability:
             vulnerability['location'] = "Unknown location"
-        
-        return vulnerability
+
+        return normalize_finding_reference_fields(vulnerability)
     
     def _format_date(self, date_value: Any) -> str:
         """Format date to Phoenix format (YYYY-MM-DD HH:MM:SS)"""
