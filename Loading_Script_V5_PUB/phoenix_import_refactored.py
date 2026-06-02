@@ -1040,8 +1040,8 @@ class PhoenixAPIClient:
                     phoenix_finding = dict(finding)
                 
                 # Transform field names to match Phoenix API specification
-                if 'reference_ids' in phoenix_finding:
-                    phoenix_finding['referenceIds'] = phoenix_finding.pop('reference_ids')
+                from finding_reference_normalizer import normalize_finding_reference_fields
+                phoenix_finding = normalize_finding_reference_fields(phoenix_finding)
                 if 'published_date_time' in phoenix_finding:
                     published = phoenix_finding.pop('published_date_time')
                     if published and str(published).strip():

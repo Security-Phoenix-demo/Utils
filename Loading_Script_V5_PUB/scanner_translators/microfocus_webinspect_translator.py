@@ -138,15 +138,19 @@ class MicroFocusWebInspectTranslator(ScannerTranslator):
                 if classification.get('kind') == 'CWE':
                     cwe_id = classification.get('identifier', '')
                     if cwe_id:
-                        cwes.append(cwe_id)
-            
+                        cwe_text = str(cwe_id).strip()
+                        if cwe_text.upper().startswith('CWE-'):
+                            cwes.append(cwe_text.upper())
+                        else:
+                            cwes.append(f"CWE-{cwe_text}")
+
             return {
                 'name': f"{vuln_id}: {name[:100]}",
                 'description': description if description else name,
                 'remedy': remedy if remedy else "See WebInspect report for remediation",
                 'severity': severity_normalized,
                 'location': url,
-                'reference_ids': [vuln_id] + cwes,
+                'reference_ids': [vuln_id],
                 'cwes': cwes,
                 'details': {
                     'check_type': check_type,

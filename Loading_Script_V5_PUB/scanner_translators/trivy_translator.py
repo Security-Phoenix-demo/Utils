@@ -48,6 +48,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from phoenix_import_refactored import AssetData, VulnerabilityData
 from .base_translator import ScannerTranslator, ScannerConfig
+from .grype_translator import build_packages_from_component
 
 logger = logging.getLogger(__name__)
 
@@ -92,23 +93,6 @@ class TrivyTranslator(ScannerTranslator):
         except Exception as e:
             logger.debug(f"TrivyTranslator.can_handle failed: {e}")
             return False
-
-    @staticmethod
-    def _strip_registry(artifact_name: str) -> str:
-        """Strip private registry prefix from image name.
-
-        'docker-hub.etraveli.net/cfcm/edvin-cmx:tag' → 'cfcm/edvin-cmx:tag'
-        Leaves names that already look like 'library/image' or 'image:tag' untouched.
-        """
-        if not artifact_name or artifact_name == 'unknown':
-            return artifact_name
-        parts = artifact_name.split('/', 1)
-        if len(parts) == 2:
-            prefix = parts[0]
-            # A registry hostname contains a dot or a port (colon)
-            if '.' in prefix or ':' in prefix:
-                return parts[1]
-        return artifact_name
 
     def parse_file(
         self,
@@ -232,7 +216,7 @@ class TrivyTranslator(ScannerTranslator):
         file_path: str,
         asset_type_override: Optional[str] = None,
     ) -> List[AssetData]:
-        """Parse new Trivy format: Results[] → Vulnerabilities[], Misconfigurations[], Secrets[]"""
+        """Parse new Trivy format: Results[] → Vulnerabilities[]"""
         assets = []
 
         # Get artifact info — fall back to first Result's Target when ArtifactName is empty
@@ -240,7 +224,7 @@ class TrivyTranslator(ScannerTranslator):
         results = data.get('Results', [])
         if not artifact_name:
             artifact_name = results[0].get('Target', '') if results and isinstance(results[0], dict) else ''
-        artifact_name = self._strip_registry(artifact_name or 'unknown')
+        artifact_name = artifact_name or 'unknown'
         artifact_type_raw = data.get('ArtifactType', '') or ''
 
         asset_type, type_source = self._determine_asset_type(
@@ -450,12 +434,22 @@ class TrivyTranslator(ScannerTranslator):
 
         # Get CWE IDs
         cwe_ids = vuln_data.get('CweIDs', [])
+        cwes = []
+        for cwe_id in cwe_ids:
+            cwe_text = str(cwe_id).strip()
+            if not cwe_text:
+                continue
+            if cwe_text.upper().startswith('CWE-'):
+                cwes.append(cwe_text.upper())
+            else:
+                cwes.append(f"CWE-{cwe_text}")
 
         # Create remedy
         if fixed_version:
             remedy = f"Update {pkg_name} from {installed_version} to {fixed_version}"
         else:
             remedy = "No fix available"
+        
 
         vulnerability = VulnerabilityData(
             name=vuln_id,
@@ -464,6 +458,7 @@ class TrivyTranslator(ScannerTranslator):
             severity=self.normalize_severity(severity),
             location=f"{pkg_name}@{installed_version}" if pkg_name else target,
             reference_ids=[vuln_id] if vuln_id else [],
+            cwes=cwes,
             published_date_time=published_date,
             details={
                 'package_name': pkg_name,
@@ -478,7 +473,15 @@ class TrivyTranslator(ScannerTranslator):
             }
         )
 
-        return vulnerability.__dict__
+        finding = vulnerability.__dict__
+        package_source = {"name": pkg_name, "version": installed_version}
+        cpe = vuln_data.get("CPE")
+        if isinstance(cpe, str) and cpe.strip():
+            package_source["cpe"] = cpe.strip()
+        packages = build_packages_from_component(package_source)
+        if packages:
+            finding["packages"] = packages
+        return finding
 
     def _create_secret_finding(self, secret_data: Dict, target: str) -> Optional[Dict]:
         """Create a finding from a Trivy Secrets[] entry.
