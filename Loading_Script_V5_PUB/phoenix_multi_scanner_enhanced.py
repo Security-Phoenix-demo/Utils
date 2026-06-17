@@ -42,7 +42,6 @@ class EnhancedMultiScannerImportManager:
             # Initialize flags for asset creation
             self.create_empty_assets = False
             self.create_inventory_assets = False
-            self.tv_tags = False
             
             # Initialize base class components manually to avoid hanging
             PhoenixImportManager.__init__(self, config_file)
@@ -616,9 +615,10 @@ class EnhancedMultiScannerImportManager:
     
     def _apply_tv_tags_to_translator(self, translator, tv_tags: bool) -> None:
         """Enable TradingView Grype OCI label transforms on the active translator."""
-        if tv_tags and hasattr(translator, "tv_tags"):
-            translator.tv_tags = True
-            logger.info("TradingView Grype tag transform enabled (--tv-tags)")
+        if not tv_tags:
+            return
+        from client_extensions.tradingview.grype_oci_tags import apply_tv_tags_to_grype_translator
+        apply_tv_tags_to_grype_translator(translator)
     
     def process_scanner_file_enhanced(self, file_path: str, scanner_type: Optional[str] = None,
                                     asset_type: Optional[str] = None, assessment_name: Optional[str] = None,

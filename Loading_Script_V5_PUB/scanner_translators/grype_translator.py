@@ -23,7 +23,6 @@ Tagging / Attributes:
 
 import json
 import logging
-import os
 from typing import Any, Callable, Dict, List, Optional
 
 from finding_reference_normalizer import (
@@ -38,39 +37,6 @@ from phoenix_import_refactored import AssetData, VulnerabilityData
 from .base_translator import ScannerTranslator, ScannerConfig
 
 logger = logging.getLogger(__name__)
-
-NEW_AUTHORS_LABEL = "org.opencontainers.image.new_authors_key"
-HRDB_PREFIX = "HRDB-"
-TV_TAGS_PREFIX_ENV = "TV_TAGS_NEW_AUTHORS_KEY_PREFIX"
-
-
-def get_new_authors_key_prefix() -> str:
-    """Resolve the UUID prefix for TradingView new_authors_key tag transforms."""
-    return os.environ.get(TV_TAGS_PREFIX_ENV, "f3c13b51-6d3b-4173-b672-a5098d037fab").strip()
-
-
-def resolve_new_authors_label_transforms(
-    tv_tags: bool = False,
-) -> Optional[Dict[str, Callable[[str], str]]]:
-    """Build OCI label value transforms when --tv-tags is enabled."""
-    if not tv_tags:
-        return None
-
-    prefix = get_new_authors_key_prefix()
-    if not prefix:
-        return None
-
-    return {
-        NEW_AUTHORS_LABEL: lambda value, p=prefix: transform_new_authors_key_value(value, p),
-    }
-
-
-def transform_new_authors_key_value(raw: str, prefix: str) -> str:
-    """Transform HRDB-<id> OCI label values into <prefix>:<id> for Phoenix tags."""
-    value = raw.strip()
-    if value.upper().startswith(HRDB_PREFIX):
-        value = value[len(HRDB_PREFIX):]
-    return f"{prefix}:{value}"
 
 
 def build_packages_from_component(component_data: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -162,7 +128,7 @@ class GrypeTranslator(ScannerTranslator):
     def __init__(self, scanner_config: ScannerConfig, tag_config, create_empty_assets: bool = False,
                  create_inventory_assets: bool = False):
         super().__init__(scanner_config, tag_config, create_empty_assets, create_inventory_assets)
-        self.tv_tags = False
+        self.label_value_transforms: Optional[Dict[str, Callable[[str], str]]] = None
     
     def can_handle(self, file_path: str, file_content: Any = None) -> bool:
         """Check if this is a Grype scan file"""
@@ -230,11 +196,9 @@ class GrypeTranslator(ScannerTranslator):
         else:
             image_name = str(target_info) if target_info else 'unknown'
 
-        label_transforms = resolve_new_authors_label_transforms(tv_tags=self.tv_tags)
-
         label_attributes, label_tags = self.promote_oci_labels(
             target_info,
-            label_value_transforms=label_transforms,
+            label_value_transforms=self.label_value_transforms,
         )
 
         # Create container asset
@@ -325,12 +289,6 @@ class GrypeTranslator(ScannerTranslator):
 
 __all__ = [
     'GrypeTranslator',
-    'NEW_AUTHORS_LABEL',
-    'HRDB_PREFIX',
-    'TV_TAGS_PREFIX_ENV',
-    'get_new_authors_key_prefix',
-    'resolve_new_authors_label_transforms',
-    'transform_new_authors_key_value',
     'build_packages_from_artifact',
     'build_packages_from_component',
     'collect_grype_reference_ids',
