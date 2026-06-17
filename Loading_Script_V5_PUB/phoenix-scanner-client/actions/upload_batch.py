@@ -59,6 +59,8 @@ Examples:
     parser.add_argument('--wait', action='store_true', help='Wait for all jobs to complete')
     parser.add_argument('--timeout', type=int, default=3600, help='Job timeout in seconds')
     parser.add_argument('--delay', type=int, default=0, help='Delay between batches in seconds')
+    parser.add_argument('--tv-tags', action='store_true',
+                       help='Enable TradingView Grype new_authors_key OCI label transform')
     
     # Output options
     parser.add_argument('--report', help='Save report to file')
@@ -125,7 +127,8 @@ Examples:
                 scanner_type=scanner_type,
                 asset_type=asset_type,
                 import_type=import_type,
-                concurrent=args.concurrent
+                concurrent=args.concurrent,
+                tv_tags=args.tv_tags or batch.get('tv_tags', False),
             )
             
             # Add batch name to results

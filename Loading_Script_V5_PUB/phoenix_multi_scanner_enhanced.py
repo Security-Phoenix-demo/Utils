@@ -42,6 +42,7 @@ class EnhancedMultiScannerImportManager:
             # Initialize flags for asset creation
             self.create_empty_assets = False
             self.create_inventory_assets = False
+            self.tv_tags = False
             
             # Initialize base class components manually to avoid hanging
             PhoenixImportManager.__init__(self, config_file)
@@ -195,7 +196,11 @@ class EnhancedMultiScannerImportManager:
             from phoenix_multi_scanner_import import MultiScannerImportManager
             
             # Set up scanner configs
-            from phoenix_multi_scanner_import import ScannerConfig
+            from scanner_translators.base_translator import (
+                ScannerConfig,
+                load_scanner_configs_from_ini,
+                merge_scanner_configs,
+            )
             default_configs = {
                 'tenable': ScannerConfig('Tenable Scan', 'INFRA'),
                 'qualys': ScannerConfig('Qualys Scan', 'INFRA'),
@@ -303,7 +308,6 @@ class EnhancedMultiScannerImportManager:
             from scanner_translators.rapid7_csv_translator import Rapid7CSVTranslator
             
             # Add scanner config for Phoenix CSV, Rapid7, Grype, Trivy, JFrog, BlackDuck, Prowler, Tier1, Tier2, Tier3, SARIF, Format Handlers, and Universal
-            from phoenix_multi_scanner_import import ScannerConfig
             self.scanner_configs['phoenix_csv'] = ScannerConfig('Phoenix Native CSV', 'INFRA')
             self.scanner_configs['phoenix_csv_infra'] = ScannerConfig('Phoenix CSV INFRA', 'INFRA')
             self.scanner_configs['phoenix_csv_cloud'] = ScannerConfig('Phoenix CSV CLOUD', 'CLOUD')
@@ -373,6 +377,15 @@ class EnhancedMultiScannerImportManager:
             self.scanner_configs['wiz_issues'] = ScannerConfig('Wiz Issues', 'CLOUD')
             self.scanner_configs['fortify'] = ScannerConfig('Fortify', 'CODE')
             self.scanner_configs['universal'] = ScannerConfig('Universal YAML-Based Scanner', 'INFRA')
+
+            ini_scanner_configs = load_scanner_configs_from_ini(self.config_file)
+            if ini_scanner_configs:
+                self.scanner_configs = merge_scanner_configs(self.scanner_configs, ini_scanner_configs)
+                logger.info(
+                    "Loaded scanner overrides from %s for: %s",
+                    self.config_file,
+                    ", ".join(sorted(ini_scanner_configs.keys())),
+                )
             
             logger.info("🔧 Initializing translators (HYBRID mode: Specialized hard-coded + YAML fallback)...")
             
@@ -601,13 +614,20 @@ class EnhancedMultiScannerImportManager:
         
         return None
     
+    def _apply_tv_tags_to_translator(self, translator, tv_tags: bool) -> None:
+        """Enable TradingView Grype OCI label transforms on the active translator."""
+        if tv_tags and hasattr(translator, "tv_tags"):
+            translator.tv_tags = True
+            logger.info("TradingView Grype tag transform enabled (--tv-tags)")
+    
     def process_scanner_file_enhanced(self, file_path: str, scanner_type: Optional[str] = None,
                                     asset_type: Optional[str] = None, assessment_name: Optional[str] = None,
                                     import_type: str = "delta", anonymize: bool = False,
                                     just_tags: bool = False, create_empty_assets: bool = False,
                                     create_inventory_assets: bool = False, verify_import: bool = False,
                                     enable_batching: bool = True, fix_data: bool = True,
-                                    asset_name: Optional[str] = None, import_csv_force: bool = False) -> Dict[str, Any]:
+                                    asset_name: Optional[str] = None, import_csv_force: bool = False,
+                                    tv_tags: bool = False) -> Dict[str, Any]:
         """Enhanced file processing with validation, fixing, and batching"""
         
         logger.info(f"🚀 Enhanced processing: {file_path}")
@@ -616,6 +636,7 @@ class EnhancedMultiScannerImportManager:
         logger.info(f"   Batching: {'enabled' if enable_batching else 'disabled'}")
         logger.info(f"   Data Fixing: {'enabled' if fix_data else 'disabled'}")
         logger.info(f"   Import Method: {'CSV (forced)' if import_csv_force else 'JSON (default)'}")
+        logger.info(f"   TV Tags: {'enabled' if tv_tags else 'disabled'}")
         if asset_name:
             logger.info(f"   Asset Name Override: {asset_name}")
         
@@ -661,6 +682,7 @@ class EnhancedMultiScannerImportManager:
                     }
             
             # Step 3: Parse file to assets (pass translator object directly and asset_name)
+            self._apply_tv_tags_to_translator(translator, tv_tags)
             assets = self._parse_file_to_assets(processed_file_path, translator, asset_type, asset_name)
             
             # OPTION 3: Lenient parsing with fallback asset creation
@@ -1005,7 +1027,7 @@ class EnhancedMultiScannerImportManager:
                               just_tags: bool = False, create_empty_assets: bool = False,
                               create_inventory_assets: bool = False, enable_batching: bool = True,
                               fix_data: bool = True, asset_name: Optional[str] = None,
-                              import_csv_force: bool = False) -> Dict[str, Any]:
+                              import_csv_force: bool = False, tv_tags: bool = False) -> Dict[str, Any]:
         """Enhanced folder processing with validation and batching"""
         
         if file_types is None:
@@ -1052,7 +1074,8 @@ class EnhancedMultiScannerImportManager:
                     enable_batching=enable_batching,
                     fix_data=fix_data,
                     asset_name=asset_name,
-                    import_csv_force=import_csv_force
+                    import_csv_force=import_csv_force,
+                    tv_tags=tv_tags
                 )
                 
                 results.append(result)
@@ -1139,6 +1162,8 @@ Examples:
     parser.add_argument('--asset-name', type=str, help='Override asset name/identifier for Phoenix/Rapid7 CSV imports (all vulnerabilities attached to this asset)')
     parser.add_argument('--import-csv-force', action='store_true',
                        help='Force direct CSV upload to Phoenix (batched in 5MB chunks) instead of JSON conversion. Only for Phoenix native CSV format.')
+    parser.add_argument('--tv-tags', action='store_true',
+                       help='Enable TradingView Grype OCI label transform for org.opencontainers.image.new_authors_key (HRDB-<id> -> <uuid>:<id>)')
     
     # Enhanced options
     parser.add_argument('--enable-batching', action='store_true', default=True,
@@ -1277,7 +1302,8 @@ Examples:
                 create_empty_assets=args.create_empty_assets,
                 create_inventory_assets=args.create_inventory_assets,
                 asset_name=args.asset_name,
-                import_csv_force=args.import_csv_force
+                import_csv_force=args.import_csv_force,
+                tv_tags=args.tv_tags
             )
             
             if result['success']:
@@ -1314,7 +1340,8 @@ Examples:
                 create_empty_assets=args.create_empty_assets,
                 create_inventory_assets=args.create_inventory_assets,
                 asset_name=args.asset_name,
-                import_csv_force=args.import_csv_force
+                import_csv_force=args.import_csv_force,
+                tv_tags=args.tv_tags
             )
             
             print(f"📁 Processed folder: {args.folder}")
