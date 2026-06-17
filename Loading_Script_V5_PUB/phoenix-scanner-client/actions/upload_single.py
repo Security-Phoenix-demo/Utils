@@ -60,6 +60,8 @@ Examples:
     # Processing options
     parser.add_argument('--no-batching', action='store_true', help='Disable intelligent batching')
     parser.add_argument('--no-fix-data', action='store_true', help='Disable automatic data fixing')
+    parser.add_argument('--tv-tags', action='store_true',
+                       help='Enable TradingView Grype new_authors_key OCI label transform')
     parser.add_argument('--webhook-url', help='Webhook URL for status updates')
     
     # Behavior options
@@ -119,6 +121,7 @@ Examples:
             import_type=args.import_type,
             enable_batching=not args.no_batching,
             fix_data=not args.no_fix_data,
+            tv_tags=args.tv_tags,
             webhook_url=args.webhook_url
         )
         

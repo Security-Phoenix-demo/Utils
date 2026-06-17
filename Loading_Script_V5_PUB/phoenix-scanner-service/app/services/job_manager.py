@@ -69,6 +69,7 @@ class JobManager:
                 "fix_data": request.fix_data,
                 "anonymize": request.anonymize,
                 "just_tags": request.just_tags,
+                "tv_tags": request.tv_tags,
                 "create_empty_assets": request.create_empty_assets,
                 "create_inventory_assets": request.create_inventory_assets,
                 "max_batch_size": request.max_batch_size,
