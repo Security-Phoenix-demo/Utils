@@ -24,6 +24,7 @@ Asset Type Behaviour:
 
 import json
 import logging
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -37,9 +38,11 @@ from finding_reference_normalizer import (
     normalize_cwe_list,
 )
 from .base_translator import ScannerTranslator, ScannerConfig
-from .grype_translator import build_packages_from_component
+from .grype_translator import build_packages_from_component, normalize_fix_versions
 
 logger = logging.getLogger(__name__)
+
+_RELEASE_TAG_PATTERN = re.compile(r"/releases/tag/([^/?#]+)", re.IGNORECASE)
 
 
 def get_tags_safely(tag_config):
@@ -205,7 +208,7 @@ class CycloneDXTranslator(ScannerTranslator):
                     vuln_data['details']['package_name'] = comp.get('name', '')
                     vuln_data['details']['package_version'] = comp.get('version', '')
                     vuln_data['details']['package_purl'] = comp.get('purl', '')
-                self._attach_component_packages(vuln_data, comp)
+                self._attach_component_packages(vuln_data, comp, vuln)
                 packages = vuln_data.pop("packages", None)
                 vuln_obj = VulnerabilityData(**vuln_data)
                 finding = vuln_obj.__dict__
@@ -270,7 +273,7 @@ class CycloneDXTranslator(ScannerTranslator):
             for vuln in vulns:
                 vuln_data = self._parse_vulnerability_json(vuln, comp_name, comp_version)
                 if vuln_data:
-                    self._attach_component_packages(vuln_data, component)
+                    self._attach_component_packages(vuln_data, component, vuln)
                     packages = vuln_data.pop("packages", None)
                     vuln_obj = VulnerabilityData(**vuln_data)
                     finding = vuln_obj.__dict__
@@ -284,8 +287,38 @@ class CycloneDXTranslator(ScannerTranslator):
         return assets
 
     @staticmethod
-    def _attach_component_packages(vuln_data: Dict, component: Dict) -> None:
-        packages = build_packages_from_component(component)
+    def _looks_like_version(value: str) -> bool:
+        text = value.strip()
+        if not text or len(text) > 80 or "\n" in text:
+            return False
+        return len(text.split()) <= 3
+
+    @staticmethod
+    def _extract_fix_versions(vuln: Dict) -> Optional[List[str]]:
+        """Derive packages.fixVersions from CycloneDX recommendation or advisory URLs."""
+        versions: List[str] = []
+        recommendation = (vuln.get("recommendation") or "").strip()
+        if recommendation and CycloneDXTranslator._looks_like_version(recommendation):
+            versions.append(recommendation)
+
+        for adv in vuln.get("advisories", []) or []:
+            url = adv.get("url", "") if isinstance(adv, dict) else str(adv)
+            match = _RELEASE_TAG_PATTERN.search(url)
+            if match:
+                tag = match.group(1).strip()
+                if tag:
+                    versions.append(tag)
+
+        return normalize_fix_versions(versions)
+
+    @staticmethod
+    def _attach_component_packages(
+        vuln_data: Dict,
+        component: Dict,
+        vuln: Optional[Dict] = None,
+    ) -> None:
+        fix_versions = CycloneDXTranslator._extract_fix_versions(vuln) if vuln else None
+        packages = build_packages_from_component(component, fix_versions=fix_versions)
         if packages:
             vuln_data["packages"] = packages
 

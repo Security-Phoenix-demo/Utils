@@ -48,7 +48,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from phoenix_import_refactored import AssetData, VulnerabilityData
 from .base_translator import ScannerTranslator, ScannerConfig
-from .grype_translator import build_packages_from_component
+from .grype_translator import build_packages_from_component, normalize_fix_versions
 
 logger = logging.getLogger(__name__)
 
@@ -478,7 +478,10 @@ class TrivyTranslator(ScannerTranslator):
         cpe = vuln_data.get("CPE")
         if isinstance(cpe, str) and cpe.strip():
             package_source["cpe"] = cpe.strip()
-        packages = build_packages_from_component(package_source)
+        packages = build_packages_from_component(
+            package_source,
+            fix_versions=normalize_fix_versions(fixed_version),
+        )
         if packages:
             finding["packages"] = packages
         return finding

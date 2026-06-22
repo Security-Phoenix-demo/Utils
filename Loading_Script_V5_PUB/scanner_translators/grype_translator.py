@@ -39,14 +39,49 @@ from .base_translator import ScannerTranslator, ScannerConfig
 logger = logging.getLogger(__name__)
 
 
-def build_packages_from_component(component_data: Dict[str, Any]) -> List[Dict[str, str]]:
+def normalize_fix_versions(versions: Any) -> Optional[List[str]]:
+    """Normalize fix version(s) to a deduped list for Phoenix packages.fixVersions."""
+    if versions is None:
+        return None
+
+    candidates: List[str] = []
+    if isinstance(versions, str):
+        text = versions.strip()
+        if text:
+            candidates.append(text)
+    elif isinstance(versions, (list, tuple, set)):
+        for value in versions:
+            text = str(value).strip() if value is not None else ""
+            if text:
+                candidates.append(text)
+    else:
+        text = str(versions).strip()
+        if text:
+            candidates.append(text)
+
+    if not candidates:
+        return None
+
+    deduped: List[str] = []
+    seen: set = set()
+    for item in candidates:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
+
+
+def build_packages_from_component(
+    component_data: Dict[str, Any],
+    fix_versions: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """Build Phoenix finding.packages from a component or Grype artifact dict."""
     name = (component_data.get("name") or "").strip()
     version = (component_data.get("version") or "").strip()
     if not name or not version:
         return []
 
-    pkg: Dict[str, str] = {"name": name, "version": version}
+    pkg: Dict[str, Any] = {"name": name, "version": version}
 
     cpe = component_data.get("cpe")
     if isinstance(cpe, str) and cpe.strip():
@@ -58,12 +93,19 @@ def build_packages_from_component(component_data: Dict[str, Any]) -> List[Dict[s
             if isinstance(first, str) and first.strip():
                 pkg["cpe"] = first.strip()
 
+    normalized_fix_versions = normalize_fix_versions(fix_versions)
+    if normalized_fix_versions:
+        pkg["fixVersions"] = normalized_fix_versions
+
     return [pkg]
 
 
-def build_packages_from_artifact(artifact_data: Dict[str, Any]) -> List[Dict[str, str]]:
+def build_packages_from_artifact(
+    artifact_data: Dict[str, Any],
+    fix_versions: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """Build Phoenix finding.packages from a Grype match artifact."""
-    return build_packages_from_component(artifact_data)
+    return build_packages_from_component(artifact_data, fix_versions=fix_versions)
 
 
 def collect_grype_reference_ids(vuln_data: Dict[str, Any], match: Dict[str, Any]) -> List[str]:
@@ -277,7 +319,10 @@ class GrypeTranslator(ScannerTranslator):
             )
 
             finding = vulnerability.__dict__
-            packages = build_packages_from_artifact(artifact_data)
+            packages = build_packages_from_artifact(
+                artifact_data,
+                fix_versions=normalize_fix_versions(fix_versions),
+            )
             if packages:
                 finding["packages"] = packages
             asset.findings.append(finding)
@@ -293,4 +338,5 @@ __all__ = [
     'build_packages_from_component',
     'collect_grype_reference_ids',
     'collect_grype_cwes',
+    'normalize_fix_versions',
 ]

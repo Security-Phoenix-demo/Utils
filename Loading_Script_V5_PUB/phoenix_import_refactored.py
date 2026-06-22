@@ -1012,7 +1012,12 @@ class PhoenixAPIClient:
             error_tracker.log_error(e, "Authentication", operation="get_access_token")
             return None
     
-    def import_assets(self, assets: List[AssetData], assessment_name: str) -> Tuple[Optional[str], Optional[Dict]]:
+    def import_assets(
+        self,
+        assets: List[AssetData],
+        assessment_name: str,
+        asset_sub_type: Optional[str] = None,
+    ) -> Tuple[Optional[str], Optional[Dict]]:
         """Import assets using the direct JSON API"""
         token = self.get_access_token()
         if not token:
@@ -1088,12 +1093,16 @@ class PhoenixAPIClient:
         )
         
         # Prepare import payload
+        assessment = {
+            "assetType": assets[0].asset_type if assets else "INFRA",
+            "name": assessment_name,
+        }
+        if asset_sub_type:
+            assessment["assetSubType"] = asset_sub_type
+
         payload = {
             "importType": self.config.import_type,
-            "assessment": {
-                "assetType": assets[0].asset_type if assets else "INFRA",
-                "name": assessment_name
-            },
+            "assessment": assessment,
             "assets": phoenix_assets
         }
         
