@@ -619,6 +619,13 @@ class EnhancedMultiScannerImportManager:
             return
         from client_extensions.tradingview.grype_oci_tags import apply_tv_tags_to_grype_translator
         apply_tv_tags_to_grype_translator(translator)
+
+    @staticmethod
+    def _trivy_asset_sub_type(translator) -> Optional[str]:
+        """Trivy container imports require assessment.assetSubType=CONTAINER_IMAGE."""
+        if translator and translator.__class__.__name__ == "TrivyTranslator":
+            return "CONTAINER_IMAGE"
+        return None
     
     def process_scanner_file_enhanced(self, file_path: str, scanner_type: Optional[str] = None,
                                     asset_type: Optional[str] = None, assessment_name: Optional[str] = None,
@@ -722,16 +729,23 @@ class EnhancedMultiScannerImportManager:
                 assessment_name = self._generate_assessment_name(file_path, detected_scanner)
             
             # Step 6: Import with or without batching
+            asset_sub_type = self._trivy_asset_sub_type(translator)
             if enable_batching:
                 session = self.enhanced_importer.import_assets_with_batching(
-                    assets, assessment_name, import_type, validate_data=True
+                    assets,
+                    assessment_name,
+                    import_type,
+                    validate_data=True,
+                    asset_sub_type=asset_sub_type,
                 )
                 return self._convert_session_to_result(session, file_path, detected_scanner, assessment_name)
             else:
                 # Traditional single-request import using API client
                 from phoenix_import_refactored import PhoenixAPIClient
                 api_client = PhoenixAPIClient(self.phoenix_config)
-                result = api_client.import_assets(assets, assessment_name)
+                result = api_client.import_assets(
+                    assets, assessment_name, asset_sub_type=asset_sub_type
+                )
                 return {
                     'success': True,
                     'file_path': file_path,
