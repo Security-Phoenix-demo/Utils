@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     PHOENIX_CLIENT_ID: Optional[str] = Field(default=None, env="PHOENIX_CLIENT_ID")
     PHOENIX_CLIENT_SECRET: Optional[str] = Field(default=None, env="PHOENIX_CLIENT_SECRET")
     PHOENIX_API_URL: Optional[str] = Field(default=None, env="PHOENIX_API_URL")
+
+    # Required when using --tv-tags
+    WORKSPACE_PREFIX: Optional[str] = Field(default=None, env="WORKSPACE_PREFIX")
     
     # Phoenix Scanner Settings (defaults, can be overridden per request)
     PHOENIX_CONFIG_FILE: str = Field(default="/parent/config_multi_scanner.ini", env="PHOENIX_CONFIG_FILE")
