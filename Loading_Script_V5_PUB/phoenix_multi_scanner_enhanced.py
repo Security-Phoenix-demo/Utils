@@ -621,9 +621,9 @@ class EnhancedMultiScannerImportManager:
         apply_tv_tags_to_grype_translator(translator)
 
     @staticmethod
-    def _trivy_asset_sub_type(translator) -> Optional[str]:
-        """Trivy container imports require assessment.assetSubType=CONTAINER_IMAGE."""
-        if translator and translator.__class__.__name__ == "TrivyTranslator":
+    def _grype_asset_sub_type(translator) -> Optional[str]:
+        """Grype/Anchore container imports require assessment.assetSubType=CONTAINER_IMAGE."""
+        if translator and translator.__class__.__name__ in {"GrypeTranslator", "AnchoreGrypeTranslator"}:
             return "CONTAINER_IMAGE"
         return None
     
@@ -729,7 +729,7 @@ class EnhancedMultiScannerImportManager:
                 assessment_name = self._generate_assessment_name(file_path, detected_scanner)
             
             # Step 6: Import with or without batching
-            asset_sub_type = self._trivy_asset_sub_type(translator)
+            asset_sub_type = self._grype_asset_sub_type(translator)
             if enable_batching:
                 session = self.enhanced_importer.import_assets_with_batching(
                     assets,
