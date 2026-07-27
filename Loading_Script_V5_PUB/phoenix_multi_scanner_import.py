@@ -46,6 +46,7 @@ from phoenix_import_refactored import (
 
 # Import the new universal scanner system
 from scanner_field_mapper import FieldMapper, ScannerFormatDetector, UniversalScannerTranslator
+from grype_digest_utils import resolve_image_digest_from_grype_target
 
 # Use the enhanced logging from the refactored tool
 logger = logging.getLogger(__name__)
@@ -372,6 +373,9 @@ class AnchoreGrypeTranslator(ScannerTranslator):
             'repository': image_name,
             **label_attributes,
         }
+        image_digest = resolve_image_digest_from_grype_target(target_info)
+        if image_digest:
+            asset_attributes['imageDigest'] = image_digest
 
         asset = AssetData(
             asset_type="CONTAINER",

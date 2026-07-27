@@ -17,6 +17,7 @@ Asset Type: CONTAINER
 Tagging / Attributes:
 - org.opencontainers.image.base.digest -> asset_attributes['baseImageDigest']
 - org.opencontainers.image.base.name   -> asset_attributes['baseImageName']
+- source.target.repoDigests            -> asset_attributes['imageDigest'] (algorithm:hex)
 - All other labels -> Phoenix asset tags (verbatim key/value).
 - Missing / null / empty labels are tolerated; the translator never crashes.
 """
@@ -34,6 +35,7 @@ from finding_reference_normalizer import (
     normalize_cwe_list,
 )
 from phoenix_import_refactored import AssetData, VulnerabilityData
+from grype_digest_utils import resolve_image_digest_from_grype_target
 from .base_translator import ScannerTranslator, ScannerConfig
 
 logger = logging.getLogger(__name__)
@@ -250,7 +252,10 @@ class GrypeTranslator(ScannerTranslator):
             'repository': image_name,
             **label_attributes,
         }
-        
+        image_digest = resolve_image_digest_from_grype_target(target_info)
+        if image_digest:
+            asset_attributes['imageDigest'] = image_digest
+
         asset = AssetData(
             asset_type="CONTAINER",
             attributes=asset_attributes,
