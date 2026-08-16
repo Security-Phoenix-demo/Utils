@@ -1,0 +1,17 @@
+# Runtime config and secrets
+config.env
+config.ini
+*.ini.local
+
+# Generated reports and runtime output
+reports/
+logs/
+debug/
+errors/
+*.log
+err.log
+
+# Python/runtime noise
+__pycache__/
+*.pyc
+.DS_Store

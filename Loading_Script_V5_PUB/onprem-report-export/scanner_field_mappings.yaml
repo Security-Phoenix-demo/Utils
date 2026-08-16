@@ -1,0 +1,47 @@
+# Optional Sonatype Nexus IQ mapping for reports normalized by export_sonatype.sh.
+# Keep this file available to the Phoenix V5 loading toolkit if the bundled
+# mapping does not include a compatible Sonatype Nexus IQ mapping.
+
+phoenix_fields:
+  asset_attributes:
+    required:
+      INFRA: ["ip", "hostname"]
+      WEB: ["ip", "fqdn"]
+      CLOUD: ["providerType", "providerAccountId", "region"]
+      CONTAINER: ["dockerfile"]
+      REPOSITORY: ["repository"]
+      CODE: ["scannerSource"]
+      BUILD: ["buildFile"]
+    optional:
+      BUILD: ["repository", "origin"]
+  findings:
+    required: ["name", "description", "remedy", "severity", "location"]
+    optional: ["referenceIds", "cwes", "publishedDateTime", "details"]
+
+scanners:
+  sonatype:
+    formats:
+      - name: "sonatype_json"
+        file_patterns: ["*.json", "*sonatype*.json"]
+        format_type: "json"
+        asset_type: "BUILD"
+        detection:
+          json_keys: ["components", "matchSummary"]
+          required_keys: ["components", "matchSummary"]
+        field_mappings:
+          asset:
+            buildFile: "components[0].packageUrl"
+            origin: '"sonatype"'
+          vulnerability:
+            name: "components[].vulnerabilities[].vuln"
+            description: "components[].vulnerabilities[].description"
+            remedy: "components[].vulnerabilities[].fix"
+            severity: "components[].vulnerabilities[].severity"
+            location: "components[].vulnerabilities[].package"
+            reference_ids: "components[].vulnerabilities[].cve"
+        severity_mapping:
+          "Critical": "10.0"
+          "High": "8.0"
+          "Medium": "5.0"
+          "Low": "2.0"
+          "Negligible": "1.0"
