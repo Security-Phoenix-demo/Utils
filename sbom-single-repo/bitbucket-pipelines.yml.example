@@ -10,7 +10,7 @@ pipelines:
           - pip
         script:
           - pip install -r requirements.txt
-          - docker run --rm -v "$BITBUCKET_CLONE_DIR:/workspace" aquasec/trivy:latest fs /workspace --format cyclonedx --output /workspace/sbom.cdx.json
+          - docker run --rm -v "$BITBUCKET_CLONE_DIR:/workspace" aquasec/trivy:0.74.0 fs --scanners vuln /workspace --format cyclonedx --output /workspace/sbom.cdx.json
           - python3 sbom_sca_single_repo_to_phoenix.py --sbom-file sbom.cdx.json --file-path package-lock.json --from-bitbucket-env --import-type merge
 
 definitions:

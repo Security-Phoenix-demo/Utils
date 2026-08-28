@@ -2,10 +2,24 @@
 """
 Single-repo CycloneDX SBOM importer for Phoenix.
 
-Purpose:
-- Read one CycloneDX JSON SBOM
-- Build one BUILD asset keyed as repo/file:branch
-- Import SBOM vulnerabilities into Phoenix /v1/import/assets
+Two import methods are supported, selected with --method:
+
+vulnerability (POST /v1/import/assets)
+    The SBOM must already carry vulnerabilities. This script parses them, builds one
+    BUILD asset keyed as repo/file:branch, and posts the findings as JSON. Use this
+    when the scanner already did the vulnerability analysis (Trivy with --scanners
+    vuln, a dep-scan VDR, Grype, ...).
+
+sbom (POST /v1/import/assets/file/translate)
+    Uploads a plain SBOM as a multipart file with scanType "PhxSbomSca:<projectType>".
+    Phoenix runs its own dep-scan service over the SBOM to derive vulnerabilities, then
+    translates and imports the result. Use this when the pipeline only produces an
+    inventory SBOM and you want Phoenix to do the vulnerability analysis.
+
+Supporting modules live alongside this file and must be deployed with it:
+    phoenix_client.py   configuration and every HTTP call
+    cyclonedx_sbom.py   CycloneDX parsing and payload construction
+    ci_context.py       repository/CI metadata resolution
 """
 
 import argparse
@@ -13,22 +27,17 @@ import configparser
 import json
 import os
 import sys
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 
-import requests
-from requests.auth import HTTPBasicAuth
-
-
-@dataclass
-class PhoenixConfig:
-    client_id: str
-    client_secret: str
-    api_base_url: str
-    import_type: str
-    assessment_name: str
-    verify_tls: bool
-    timeout_seconds: int
+from ci_context import resolve_repo_context
+from cyclonedx_sbom import build_payload, read_sbom
+from phoenix_client import (
+    PhoenixConfig,
+    build_session,
+    get_access_token,
+    import_assets,
+    upload_sbom_file,
+    wait_for_translate,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,13 +53,58 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Populate repo/branch/commit/build metadata from Bitbucket Pipeline environment variables",
     )
+    parser.add_argument(
+        "--from-jenkins-env",
+        action="store_true",
+        help="Populate repo/branch/commit/build metadata from Jenkins environment variables",
+    )
+    parser.add_argument(
+        "--from-github-env",
+        action="store_true",
+        help="Populate repo/branch/commit/build metadata from GitHub Actions environment variables",
+    )
     parser.add_argument("--assessment-name", help="Phoenix assessment name override")
     parser.add_argument("--import-type", choices=["new", "merge", "delta"], help="Phoenix import type")
+    parser.add_argument(
+        "--method",
+        choices=["vulnerability", "sbom"],
+        help=(
+            "Import method. 'vulnerability' parses vulnerabilities out of the SBOM and posts "
+            "findings to /v1/import/assets. 'sbom' uploads the plain SBOM file and lets Phoenix "
+            "run dep-scan over it. Default: vulnerability."
+        ),
+    )
+    parser.add_argument(
+        "--project-type",
+        help=(
+            "Project type sent to Phoenix dep-scan as scanType 'PhxSbomSca:<projectType>' "
+            "(sbom method only). Examples: universal, js, python, java, go. Default: universal."
+        ),
+    )
+    parser.add_argument("--scan-target", help="Scan target recorded on the import (sbom method)")
+    parser.add_argument(
+        "--no-auto-import",
+        action="store_true",
+        help="sbom method: stage the translation but do not import it automatically",
+    )
+    parser.add_argument(
+        "--wait",
+        action="store_true",
+        help="sbom method: poll until the translation/import finishes instead of returning immediately",
+    )
     parser.add_argument("--config", default="config.ini", help="INI configuration file")
     parser.add_argument("--origin", default="cyclonedx-sca", help="Phoenix asset origin value")
     parser.add_argument("--api-base-url", help="Phoenix API base URL override")
     parser.add_argument("--client-id", help="Phoenix client_id override")
     parser.add_argument("--client-secret", help="Phoenix client_secret override")
+    parser.add_argument(
+        "--allow-insecure-http",
+        action="store_true",
+        help=(
+            "Permit an http:// api_base_url. Credentials are sent as HTTP Basic, so this "
+            "exposes them on the wire - use it only for a local mock or lab endpoint."
+        ),
+    )
     parser.add_argument("--verify-tls", action="store_true", help="Force TLS certificate verification")
     parser.add_argument("--no-verify-tls", action="store_true", help="Disable TLS verification")
     parser.add_argument("--dry-run", action="store_true", help="Build payload but do not call Phoenix")
@@ -58,7 +112,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_config(config_file: str, args: argparse.Namespace) -> PhoenixConfig:
+def load_config(config_file: str, args: argparse.Namespace, require_credentials: bool = True) -> PhoenixConfig:
     parser = configparser.ConfigParser()
     if os.path.exists(config_file):
         parser.read(config_file)
@@ -77,6 +131,10 @@ def load_config(config_file: str, args: argparse.Namespace) -> PhoenixConfig:
     ).rstrip("/")
     import_type = args.import_type or phoenix_section.get("import_type", "merge")
     assessment_name = args.assessment_name or phoenix_section.get("assessment_name", "single-repo-sca-sbom")
+    method = (args.method or phoenix_section.get("method", "vulnerability")).strip().lower()
+    if method not in ("vulnerability", "sbom"):
+        raise ValueError(f"Unsupported method '{method}' (expected 'vulnerability' or 'sbom')")
+    project_type = args.project_type or phoenix_section.get("project_type", "universal")
 
     verify_tls = True
     if options_section:
@@ -86,13 +144,23 @@ def load_config(config_file: str, args: argparse.Namespace) -> PhoenixConfig:
     if args.no_verify_tls:
         verify_tls = False
 
+    allow_insecure_http = args.allow_insecure_http
+    if not allow_insecure_http and options_section:
+        allow_insecure_http = options_section.get("allow_insecure_http", "false").strip().lower() == "true"
+
     timeout_seconds = int(options_section.get("timeout_seconds", "60")) if options_section else 60
+    poll_interval_seconds = int(options_section.get("poll_interval_seconds", "10")) if options_section else 10
+    poll_timeout_seconds = int(options_section.get("poll_timeout_seconds", "1800")) if options_section else 1800
+    wait_for_completion = args.wait
+    if not wait_for_completion and options_section:
+        wait_for_completion = options_section.get("wait_for_completion", "false").strip().lower() == "true"
 
     missing = []
-    if not client_id:
-        missing.append("client_id")
-    if not client_secret:
-        missing.append("client_secret")
+    if require_credentials:
+        if not client_id:
+            missing.append("client_id")
+        if not client_secret:
+            missing.append("client_secret")
     if not api_base_url:
         missing.append("api_base_url")
     if missing:
@@ -106,307 +174,157 @@ def load_config(config_file: str, args: argparse.Namespace) -> PhoenixConfig:
         assessment_name=assessment_name,
         verify_tls=verify_tls,
         timeout_seconds=timeout_seconds,
+        method=method,
+        project_type=project_type,
+        wait_for_completion=wait_for_completion,
+        poll_interval_seconds=poll_interval_seconds,
+        poll_timeout_seconds=poll_timeout_seconds,
+        allow_insecure_http=allow_insecure_http,
     )
 
 
-def read_sbom(path: str) -> Dict:
-    with open(path, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    if data.get("bomFormat") != "CycloneDX":
-        raise ValueError("Input is not a CycloneDX JSON SBOM (bomFormat != CycloneDX)")
-    return data
-
-
-def build_component_maps(sbom: Dict) -> Tuple[Dict[str, str], List[Dict[str, str]]]:
-    ref_to_name: Dict[str, str] = {}
-    installed_software: List[Dict[str, str]] = []
-
-    for comp in sbom.get("components", []):
-        name = comp.get("name", "unknown")
-        version = comp.get("version", "")
-        bom_ref = comp.get("bom-ref", "")
-        purl = comp.get("purl", "")
-        publisher = comp.get("publisher", "") or comp.get("author", "")
-
-        display = f"{name}@{version}" if version else name
-        if bom_ref:
-            ref_to_name[bom_ref] = display
-
-        sw_entry = {"vendor": publisher or "unknown", "name": name, "version": version or "unknown"}
-        if purl:
-            sw_entry["cpe"] = purl
-        installed_software.append(sw_entry)
-
-    return ref_to_name, installed_software
-
-
-def normalize_severity(vuln: Dict) -> str:
-    ratings = vuln.get("ratings", [])
-    text = ""
-    score = None
-
-    for rating in ratings:
-        if not text and rating.get("severity"):
-            text = str(rating["severity"]).strip().lower()
-        if score is None and rating.get("score") is not None:
-            try:
-                score = float(rating["score"])
-            except (TypeError, ValueError):
-                score = None
-
-    if score is not None:
-        if score >= 9.0:
-            return "10.0"
-        if score >= 7.0:
-            return "8.0"
-        if score >= 4.0:
-            return "5.0"
-        if score > 0.0:
-            return "2.0"
-        return "1.0"
-
-    text_map = {
-        "critical": "10.0",
-        "high": "8.0",
-        "medium": "5.0",
-        "moderate": "5.0",
-        "low": "2.0",
-        "info": "1.0",
-        "informational": "1.0",
-    }
-    return text_map.get(text, "5.0")
-
-
-def parse_reference_ids(vuln: Dict) -> List[str]:
-    out: List[str] = []
-    vuln_id = vuln.get("id", "")
-    if vuln_id:
-        out.append(vuln_id)
-
-    for ref in vuln.get("references", []):
-        if isinstance(ref, dict) and ref.get("id"):
-            out.append(str(ref["id"]))
-    # unique, preserve order
-    unique: List[str] = []
-    seen = set()
-    for item in out:
-        if item not in seen:
-            seen.add(item)
-            unique.append(item)
-    return unique
-
-
-def parse_cwes(vuln: Dict) -> List[str]:
-    cwes = []
-    for cwe in vuln.get("cwes", []):
-        cwe_str = str(cwe)
-        if cwe_str.startswith("CWE-"):
-            cwes.append(cwe_str)
-        else:
-            cwes.append(f"CWE-{cwe_str}")
-    return cwes
-
-
-def resolve_repo_context(args: argparse.Namespace) -> Dict[str, str]:
+def run_sbom_upload(cfg: PhoenixConfig, args: argparse.Namespace, sbom: dict, context: dict) -> int:
     """
-    Resolve required repository context from CLI and optionally Bitbucket env vars.
+    Upload the SBOM file itself and let Phoenix derive vulnerabilities from it.
+
+    Nothing is parsed out of the file here: Phoenix runs dep-scan over it server-side, so an
+    inventory-only SBOM is the expected input rather than a mistake.
     """
-    context = {
-        "repo": args.repo or "",
-        "file_path": args.file_path or "",
-        "branch": args.branch or "",
-        "commit": "",
-        "build_number": "",
-        "pipeline_url": "",
-    }
-
-    if args.from_bitbucket_env:
-        context["repo"] = context["repo"] or os.getenv("BITBUCKET_REPO_FULL_NAME", "")
-        context["branch"] = context["branch"] or os.getenv("BITBUCKET_BRANCH", "")
-        context["commit"] = os.getenv("BITBUCKET_COMMIT", "")
-        context["build_number"] = os.getenv("BITBUCKET_BUILD_NUMBER", "")
-
-        workspace = os.getenv("BITBUCKET_WORKSPACE", "")
-        repo_slug = os.getenv("BITBUCKET_REPO_SLUG", "")
-        if workspace and repo_slug and context["build_number"]:
-            context["pipeline_url"] = (
-                f"https://bitbucket.org/{workspace}/{repo_slug}/pipelines/results/{context['build_number']}"
-            )
-
-    missing = []
-    if not context["repo"]:
-        missing.append("repo")
-    if not context["file_path"]:
-        missing.append("file_path")
-    if not context["branch"]:
-        missing.append("branch")
-    if missing:
-        mode_hint = " (tip: use --from-bitbucket-env in Bitbucket Pipelines)" if args.from_bitbucket_env else ""
-        raise ValueError(f"Missing required repository context: {', '.join(missing)}{mode_hint}")
-
-    return context
-
-
-def build_findings(sbom: Dict, ref_to_name: Dict[str, str], asset_key: str) -> List[Dict]:
-    findings: List[Dict] = []
-    for vuln in sbom.get("vulnerabilities", []):
-        vuln_id = vuln.get("id", "UNKNOWN")
-        affects = vuln.get("affects", [])
-        affected_components: List[str] = []
-        for affect in affects:
-            if not isinstance(affect, dict):
-                continue
-            ref = affect.get("ref", "")
-            if ref:
-                affected_components.append(ref_to_name.get(ref, ref))
-        location = ", ".join(affected_components[:5]) if affected_components else asset_key
-
-        description = vuln.get("description") or f"Vulnerability {vuln_id} detected from CycloneDX SBOM"
-        remedy = vuln.get("recommendation") or "See vulnerability advisory and update the affected package"
-
-        finding = {
-            "name": vuln_id,
-            "description": description[:500],
-            "remedy": remedy[:500],
-            "severity": normalize_severity(vuln),
-            "location": location[:500],
-            "referenceIds": parse_reference_ids(vuln),
-        }
-
-        cwes = parse_cwes(vuln)
-        if cwes:
-            finding["cwes"] = cwes
-
-        finding["details"] = {
-            "asset_key_mode": "repo/file:branch",
-            "asset_key_value": asset_key,
-            "affected_components": affected_components,
-            "source": vuln.get("source", {}),
-            "ratings": vuln.get("ratings", []),
-        }
-        findings.append(finding)
-    return findings
-
-
-def build_payload(
-    sbom: Dict,
-    assessment_name: str,
-    import_type: str,
-    repo: str,
-    file_path: str,
-    branch: str,
-    origin: str,
-    bitbucket_meta: Optional[Dict[str, str]] = None,
-) -> Dict:
-    asset_key = f"{repo}/{file_path}:{branch}"
-    ref_to_name, installed_software = build_component_maps(sbom)
-    findings = build_findings(sbom, ref_to_name, asset_key)
-    bitbucket_meta = bitbucket_meta or {}
-
-    tags = [
-        {"key": "scanner", "value": "cyclonedx"},
-        {"key": "scanType", "value": "sca"},
-        {"key": "repository", "value": repo},
-        {"key": "branch", "value": branch},
-        {"key": "sourceFile", "value": file_path},
-        {"key": "assetKeyMode", "value": "repo/file:branch"},
-    ]
-    if bitbucket_meta.get("commit"):
-        tags.append({"key": "commit", "value": bitbucket_meta["commit"]})
-    if bitbucket_meta.get("build_number"):
-        tags.append({"key": "ciBuildNumber", "value": bitbucket_meta["build_number"]})
-    if bitbucket_meta.get("pipeline_url"):
-        tags.append({"key": "ciPipelineUrl", "value": bitbucket_meta["pipeline_url"]})
-
-    return {
-        "importType": import_type,
-        "assessment": {
-            "assetType": "BUILD",
-            "name": assessment_name,
-        },
-        "assets": [
-            {
-                "attributes": {
-                    "buildFile": asset_key,
-                    "origin": origin,
-                },
-                "tags": tags,
-                "installedSoftware": installed_software,
-                "findings": findings,
-            }
-        ],
-    }
-
-
-def get_access_token(cfg: PhoenixConfig) -> str:
-    url = f"{cfg.api_base_url}/v1/auth/access_token"
-    response = requests.get(
-        url,
-        auth=HTTPBasicAuth(cfg.client_id, cfg.client_secret),
-        timeout=cfg.timeout_seconds,
-        verify=cfg.verify_tls,
+    vuln_count = len(sbom.get("vulnerabilities", []))
+    component_count = len(sbom.get("components", []))
+    scan_type = f"PhxSbomSca:{cfg.project_type}"
+    print(
+        f"Method: sbom upload | components={component_count}, "
+        f"vulnerabilities-in-file={vuln_count} (Phoenix will run dep-scan)",
+        flush=True,
     )
-    if response.status_code != 200:
-        raise RuntimeError(f"Token request failed: HTTP {response.status_code} - {response.text[:300]}")
-    token = response.json().get("token")
-    if not token:
-        raise RuntimeError("Token request succeeded but no token returned")
-    return token
+    print(f"scanType={scan_type}, importType={cfg.import_type}, repository={context['repo']}", flush=True)
 
+    if args.dry_run:
+        print("Dry-run enabled: no API call was made.", flush=True)
+        return 0
 
-def import_assets(cfg: PhoenixConfig, token: str, payload: Dict) -> Dict:
-    url = f"{cfg.api_base_url}/v1/import/assets"
-    response = requests.post(
-        url,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=cfg.timeout_seconds,
-        verify=cfg.verify_tls,
+    session = build_session()
+    token = get_access_token(cfg, session)
+    result = upload_sbom_file(
+        cfg=cfg,
+        session=session,
+        token=token,
+        sbom_path=args.sbom_file,
+        repo=context["repo"],
+        file_path=context["file_path"],
+        auto_import=not args.no_auto_import,
+        scan_target=args.scan_target or context["file_path"],
     )
-    if response.status_code not in (200, 201):
-        raise RuntimeError(f"Import failed: HTTP {response.status_code} - {response.text[:500]}")
-    return response.json() if response.text.strip() else {"status": "accepted"}
+    request_id = result.get("id") or result.get("requestId")
+    print("SBOM uploaded successfully.", flush=True)
+    print(json.dumps(result, indent=2)[:1000], flush=True)
+
+    if cfg.wait_for_completion:
+        if not request_id:
+            raise RuntimeError("Cannot wait for completion: no request id returned by Phoenix")
+        final = wait_for_translate(
+            cfg, session, token, request_id, auto_import=not args.no_auto_import
+        )
+        print(
+            "Translation staged for review." if args.no_auto_import else "Import completed.",
+            flush=True,
+        )
+        print(json.dumps(final, indent=2)[:1000], flush=True)
+    return 0
+
+
+def run_vulnerability_import(cfg: PhoenixConfig, args: argparse.Namespace, sbom: dict, context: dict) -> int:
+    """Parse vulnerabilities out of the SBOM and post them as findings on one BUILD asset."""
+    payload = build_payload(
+        sbom=sbom,
+        assessment_name=cfg.assessment_name,
+        import_type=cfg.import_type,
+        repo=context["repo"],
+        file_path=context["file_path"],
+        branch=context["branch"],
+        origin=args.origin,
+        ci_meta=context,
+    )
+
+    if args.payload_out:
+        with open(args.payload_out, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+
+    assets_count = len(payload.get("assets", []))
+    findings_count = len(payload["assets"][0].get("findings", [])) if assets_count else 0
+    print(f"Prepared payload: assets={assets_count}, findings={findings_count}", flush=True)
+
+    if findings_count == 0 and sbom.get("components"):
+        print(
+            "Warning: the SBOM contains components but no vulnerabilities, so no findings "
+            "will be imported. Re-scan with vulnerability analysis enabled (for example "
+            "'trivy --scanners vuln'), or use --method sbom to let Phoenix analyse it.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    if args.dry_run:
+        print("Dry-run enabled: no API call was made.", flush=True)
+        return 0
+
+    session = build_session()
+    token = get_access_token(cfg, session)
+    result = import_assets(cfg, session, token, payload)
+    print("Import submitted successfully.", flush=True)
+    print(json.dumps(result, indent=2), flush=True)
+    return 0
+
+
+def validate_method_options(cfg: PhoenixConfig, args: argparse.Namespace) -> None:
+    """
+    Reject options that only mean something for the sbom method.
+
+    --wait and --no-auto-import both describe the asynchronous translate request. The
+    vulnerability method is a single synchronous POST with nothing to poll or stage, so asking
+    for them there previously did nothing at all and said nothing about it.
+
+    A CLI flag is an explicit request and fails. wait_for_completion coming from config.ini is
+    only a warning: one config file is commonly shared across both methods, and a vulnerability
+    run should not break because the file also configures sbom runs.
+    """
+    if cfg.method != "vulnerability":
+        return
+    explicit = []
+    if args.wait:
+        explicit.append("--wait")
+    if args.no_auto_import:
+        explicit.append("--no-auto-import")
+    if explicit:
+        raise ValueError(
+            f"{' and '.join(explicit)} "
+            f"{'apply' if len(explicit) > 1 else 'applies'} only to --method sbom. The vulnerability method "
+            f"posts findings synchronously, so there is no translation to wait for or stage. "
+            f"Drop the flag, or switch to --method sbom."
+        )
+    if cfg.wait_for_completion:
+        print(
+            "Warning: wait_for_completion is set but --method vulnerability imports "
+            "synchronously, so it has no effect on this run.",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def main() -> int:
     args = parse_args()
-
     try:
-        cfg = load_config(args.config, args)
+        cfg = load_config(args.config, args, require_credentials=not args.dry_run)
+        validate_method_options(cfg, args)
         sbom = read_sbom(args.sbom_file)
         context = resolve_repo_context(args)
 
-        payload = build_payload(
-            sbom=sbom,
-            assessment_name=cfg.assessment_name,
-            import_type=cfg.import_type,
-            repo=context["repo"],
-            file_path=context["file_path"],
-            branch=context["branch"],
-            origin=args.origin,
-            bitbucket_meta=context,
-        )
-
-        if args.payload_out:
-            with open(args.payload_out, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2)
-
-        assets_count = len(payload.get("assets", []))
-        findings_count = len(payload["assets"][0].get("findings", [])) if assets_count else 0
-        print(f"Prepared payload: assets={assets_count}, findings={findings_count}")
-
-        if args.dry_run:
-            print("Dry-run enabled: no API call was made.")
-            return 0
-
-        token = get_access_token(cfg)
-        result = import_assets(cfg, token, payload)
-        print("Import submitted successfully.")
-        print(json.dumps(result, indent=2))
-        return 0
+        if cfg.method == "sbom":
+            return run_sbom_upload(cfg, args, sbom, context)
+        return run_vulnerability_import(cfg, args, sbom, context)
 
     except Exception as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr, flush=True)
         return 1
 
 

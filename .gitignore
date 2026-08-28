@@ -4,3 +4,12 @@ Loading_Script_V5_PUB/scanner_translators/__pycache__/aqua_translator.cpython-31
 Loading_Script_V5_PUB/scanner_translators/__pycache__/aqua_translator.cpython-38.pyc
 /Loading_Script_V5_PUB/scanner_translators/__pycache__
 Loading_Script_V5_PUB/phoenix-scanner-service/.env.database
+
+# Credentials. config.ini holds a Phoenix client_id/client_secret pair; this is a public
+# repository, so the file must never be committed. Ship config.ini.template instead.
+config.ini
+**/config.ini
+*.env
+.env
+__pycache__/
+**/__pycache__/

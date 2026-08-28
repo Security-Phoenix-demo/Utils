@@ -27,6 +27,10 @@ Enterprise-grade GitHub Actions workflows and Python scripts for multi-SBOM gene
 - JWT-validated Phoenix API integration with audit logging
 - 47-test security test suite
 
+For new integrations see `sbom-single-repo` below, which covers the same SBOM and container
+scanning ground with both Phoenix import APIs, a choice of three scanners, and pipelines for
+Jenkins, GitHub Actions, and Bitbucket.
+
 ---
 
 ### Gating — CI/CD Policy Gating
@@ -45,14 +49,37 @@ API endpoints used:
 
 ---
 
-### sbom-single-repo — Single-Repository SBOM Importer
+### sbom-single-repo — SBOM & Container SCA for CI
 Location: `/sbom-single-repo`
 
-Imports CycloneDX JSON SBOMs for a single repository into Phoenix. Creates BUILD asset identities using `repo/file:branch` format (e.g. `acme/payments/package-lock.json:main`).
+A more evolved alternative to `container scan`, covering the same ground — SBOM generation, container vulnerability scanning, Phoenix upload — with both Phoenix import APIs, three scanners, and ready-to-run pipelines for Jenkins, GitHub Actions, and Bitbucket. Prefer this for new integrations.
 
-- Auto-detects Bitbucket Pipeline environment variables (`--from-bitbucket-env`)
-- Dry-run and payload preview modes for validation before upload
-- Preserves source context via tags (repository, sourceFile, branch, commit, CI build number/URL)
+**Two import methods**, chosen per run:
+
+| Method | Endpoint | Who finds the vulnerabilities |
+|---|---|---|
+| `sbom` | `POST /v1/import/assets/file/translate` | Phoenix — an inventory SBOM is uploaded and analysed server-side |
+| `vulnerability` | `POST /v1/import/assets` | the pipeline — findings are scanned locally and posted as JSON |
+
+**Two scan modes** — repository build files, or a container image — and **three scanners**: cdxgen (inventory SBOM), Trivy (SBOM with vulnerabilities), and OWASP dep-scan (VDR). Method, mode, and scanner are independent; an `auto` setting picks sensible defaults and contradictory combinations are rejected before any scan runs, with the reason.
+
+Key features:
+
+- **Both build files and container images** — `trivy fs` over checked-out manifests, or `trivy image` against a tagged image
+- **CI metadata auto-detection** — `--from-jenkins-env`, `--from-github-env`, `--from-bitbucket-env` populate repository, branch, commit, build number, and build URL
+- **BUILD asset identity** as `repo/file:branch` (e.g. `acme/payments/package-lock.json:main`), with source context preserved as tags
+- **Severity taken as the maximum** across every CycloneDX rating source (ghsa, nvd, redhat, …) rather than the first listed
+- **Disposable local Jenkins harness** (`local-jenkins/`) that builds a controller, a fake service, and a deliberately outdated container image, then exercises every mode end to end before you point it at a real repository
+- **Dry-run and payload preview** for validation before any upload
+
+Security and supply-chain posture:
+
+- Credentials are refused over plaintext HTTP by default, since the token call sends them as HTTP Basic
+- Automatic retries are limited to `GET`; the imports are non-idempotent and are never transparently replayed
+- Scanner images and Jenkins plugins are version-pinned, so a moved upstream tag cannot change what a build scans with
+- Input is validated by shape, naming SARIF, SPDX, or Trivy-native JSON when a non-CycloneDX file is supplied
+
+Operational note: the `sbom` method is asynchronous — Phoenix analyses the uploaded SBOM server-side. Waiting for completion is opt-in in both pipelines, and uploads to one organisation should be serialised rather than fanned out in parallel. See the utility's own `README.md` for the full matrix, and `QUICK_START.md` to get running quickly.
 
 ---
 
@@ -132,7 +159,7 @@ Features: fuzzy scanner-type validation, configurable polling/timeout, access to
 ### Prerequisites
 
 - Python 3.x
-- Docker (for `Loading_Script_V5_PUB` and `container scan`)
+- Docker (for `Loading_Script_V5_PUB`, `container scan`, and `sbom-single-repo`)
 - Phoenix Security API credentials (Client ID + Client Secret)
 
 ### Authentication
@@ -189,7 +216,7 @@ For the most common use case (scanner ingestion), start with `Loading_Script_V5_
 ├── Loading_Script_V5_PUB/          # Production multi-scanner import (service + CLI)
 ├── container scan/                  # SBOM generation & container vulnerability scanning
 ├── Gating/                          # CI/CD policy gating
-├── sbom-single-repo/                # Single-repo CycloneDX SBOM importer
+├── sbom-single-repo/                # SBOM & container SCA for CI (Jenkins/Actions/Bitbucket)
 ├── Generic_to_csv_translator/       # Vulnerability format → Phoenix CSV converter
 ├── vulnerability translator/        # Phoenix JSON export → CSV/Excel converter
 ├── asset-count-scripts/             # Cloud & Git asset inventory (read-only)
