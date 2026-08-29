@@ -34,13 +34,30 @@ def repo_from_git_url(git_url: str) -> str:
     return url.strip("/")
 
 
+# Longest first: refs/remotes/origin/ must be tried before refs/remotes/ and refs/.
+_REF_PREFIXES = (
+    "refs/remotes/origin/",
+    "refs/remotes/",
+    "refs/heads/",
+    "refs/tags/",
+    "origin/",
+    "refs/",
+)
+
+
 def strip_remote_prefix(branch: str) -> str:
-    """Turn a Jenkins GIT_BRANCH value such as `origin/main` into `main`."""
+    """
+    Turn a Jenkins GIT_BRANCH value into a bare branch or tag name.
+
+    Each known prefix is stripped explicitly. A generic "drop the first segment" rule left
+    `refs/tags/v1.0.0` as `tags/v1.0.0` and `refs/remotes/origin/dev` as `remotes/origin/dev`,
+    both of which reach the asset key - so the same file built from a tag was recorded as a
+    different asset from the same file built from a branch.
+    """
     branch = branch.strip()
-    if branch.startswith("refs/heads/"):
-        return branch[len("refs/heads/") :]
-    if "/" in branch and branch.split("/", 1)[0] in {"origin", "refs"}:
-        return branch.split("/", 1)[1]
+    for prefix in _REF_PREFIXES:
+        if branch.startswith(prefix):
+            return branch[len(prefix):]
     return branch
 
 

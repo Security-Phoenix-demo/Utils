@@ -140,8 +140,7 @@ pipeline {
 
         stage('Generate SBOM') {
             steps {
-                sh '''
-                    #!/usr/bin/env bash
+                sh '''#!/usr/bin/env bash
                     set -euo pipefail
                     rm -rf "$SCAN_REPORTS"
                     mkdir -p "$SCAN_REPORTS"
@@ -153,8 +152,7 @@ pipeline {
                         // cdxgen cannot export an image from inside its own container.
                         // cdxgen also refuses to run with root privileges, so it uses the
                         // image's default user and a world-writable reports dir.
-                        sh '''
-                            #!/usr/bin/env bash
+                        sh '''#!/usr/bin/env bash
                     set -euo pipefail
                             docker run --rm \
                                 -v "$WORKSPACE:/app:ro" \
@@ -169,8 +167,7 @@ pipeline {
                         // It is a single streamed download that fails outright on a dropped
                         // connection, so a cold agent is warned here rather than discovering it
                         // half way through a build. depscan_vdb_warm.sh populates the volume.
-                        sh '''
-                            #!/usr/bin/env bash
+                        sh '''#!/usr/bin/env bash
                     set -euo pipefail
                             docker volume create "$DEPSCAN_VDB_VOLUME" >/dev/null
                             # Measure the extracted database only. A failed download leaves its
@@ -189,14 +186,13 @@ pipeline {
                                 echo "WARNING: $DEPSCAN_VDB_VOLUME holds only ${vdb_bytes:-0} bytes of extracted database." >&2
                                 echo "WARNING: dep-scan will download the full vulnerability database during this build," >&2
                                 echo "WARNING: which is slow and fails on any connection drop. Warm it first with:" >&2
-                                echo "WARNING:   Utils/sca-pipeline/sbom-single-repo/depscan_vdb_warm.sh app" >&2
+                                echo "WARNING:   Utils/SBOM-SCA-CONTAINER-PIPELINE/sbom-single-repo/depscan_vdb_warm.sh app" >&2
                             else
                                 echo "dep-scan VDB cache present (${vdb_bytes} bytes)"
                             fi
                         '''
                         if (params.SCAN_MODE == 'image') {
-                            sh '''
-                                #!/usr/bin/env bash
+                            sh '''#!/usr/bin/env bash
                     set -euo pipefail
                                 docker run --rm -u root \
                                     -v "$DEPSCAN_VDB_VOLUME:/vdb" -e VDB_HOME=/vdb \
@@ -207,8 +203,7 @@ pipeline {
                                         --src "$CONTAINER_IMAGE" --reports-dir /reports
                             '''
                         } else {
-                            sh '''
-                                #!/usr/bin/env bash
+                            sh '''#!/usr/bin/env bash
                     set -euo pipefail
                                 docker run --rm -u root \
                                     -v "$DEPSCAN_VDB_VOLUME:/vdb" -e VDB_HOME=/vdb \
@@ -220,8 +215,7 @@ pipeline {
                             '''
                         }
                         // dep-scan names the VDR sbom-<project_type>.vdr.json, so it is located by glob.
-                        sh '''
-                            #!/usr/bin/env bash
+                        sh '''#!/usr/bin/env bash
                     set -euo pipefail
                             vdr=$(ls -1 "$SCAN_REPORTS"/*.vdr.json 2>/dev/null | head -1)
                             if [ -z "$vdr" ]; then
@@ -239,8 +233,7 @@ pipeline {
                         // Phoenix receives 0 findings. For the sbom method Phoenix does the analysis,
                         // so the flag is omitted rather than scanning and discarding the result.
                         if (params.SCAN_MODE == 'image') {
-                            sh '''
-                                #!/usr/bin/env bash
+                            sh '''#!/usr/bin/env bash
                     set -euo pipefail
                                 # Derived here rather than passed in as an env var: Jenkins drops
                                 # environment variables whose value is the empty string, so the
@@ -257,8 +250,7 @@ pipeline {
                                     --output /workspace/sbom.cdx.json "$CONTAINER_IMAGE"
                             '''
                         } else {
-                            sh '''
-                                #!/usr/bin/env bash
+                            sh '''#!/usr/bin/env bash
                     set -euo pipefail
                                 scanners=""
                                 if [ "$EFFECTIVE_METHOD" = "vulnerability" ]; then
@@ -278,10 +270,9 @@ pipeline {
 
         stage('Send to Phoenix') {
             steps {
-                sh '''
-                    #!/usr/bin/env bash
+                sh '''#!/usr/bin/env bash
                     set -euo pipefail
-                    cd "Utils/sca-pipeline/sbom-single-repo"
+                    cd "Utils/SBOM-SCA-CONTAINER-PIPELINE/sbom-single-repo"
 
                     # The importer needs `requests`. Agents differ: some already have it, and a
                     # modern Debian/Ubuntu python refuses a plain `pip install` outright with

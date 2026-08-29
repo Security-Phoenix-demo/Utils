@@ -7,6 +7,7 @@ polling (/v1/import/assets/file/translate) used by the sbom method.
 """
 
 import json
+import re
 import os
 import sys
 import time
@@ -25,6 +26,9 @@ except ImportError:  # pragma: no cover - very old urllib3
 
 
 RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
+# AWS API Gateway HTTP API caps a request payload at 10MB; warn before getting close.
+GATEWAY_LIMIT_BYTES = 10 * 1024 * 1024
+GATEWAY_WARN_BYTES = 8 * 1024 * 1024
 RETRY_TOTAL = 4
 RETRY_BACKOFF_FACTOR = 1.5
 
@@ -129,7 +133,27 @@ def get_access_token(cfg: PhoenixConfig, session: requests.Session) -> str:
 
 
 def import_assets(cfg: PhoenixConfig, session: requests.Session, token: str, payload: Dict) -> Dict:
+    """
+    Post findings as JSON.
+
+    The size check is not a Phoenix limit. The API sits behind an AWS API Gateway HTTP API
+    (identifiable by the apigw-requestid response header), which caps a request payload at
+    10MB and rejects anything larger at the edge - the caller sees a gateway error page rather
+    than anything recognisably from Phoenix. Findings run to roughly 2.5KB each, so a large
+    monorepo scan can reach it. Warning here means the cause is legible when it happens.
+    """
     url = f"{cfg.api_base_url}/v1/import/assets"
+    body = json.dumps(payload).encode("utf-8")
+    if len(body) > GATEWAY_WARN_BYTES:
+        finding_count = len(payload.get("assets", [{}])[0].get("findings", [])) if payload.get("assets") else 0
+        print(
+            f"Warning: payload is {len(body) / 1_048_576:.1f}MB across {finding_count} findings. "
+            f"The API gateway rejects requests over ~{GATEWAY_LIMIT_BYTES // 1_048_576}MB, and does so "
+            f"with a gateway error rather than a Phoenix one. Split the scan by manifest or "
+            f"sub-project if this fails.",
+            file=sys.stderr,
+            flush=True,
+        )
     response = session.post(
         url,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -137,6 +161,13 @@ def import_assets(cfg: PhoenixConfig, session: requests.Session, token: str, pay
         timeout=cfg.timeout_seconds,
         verify=cfg.verify_tls,
     )
+    if response.status_code == 413:
+        raise RuntimeError(
+            f"Import rejected as too large (HTTP 413). The payload was "
+            f"{len(body) / 1_048_576:.1f}MB and the API gateway caps requests at about "
+            f"{GATEWAY_LIMIT_BYTES // 1_048_576}MB. Split the scan into smaller imports - by "
+            f"manifest, or by sub-project - rather than retrying it unchanged."
+        )
     if response.status_code not in (200, 201):
         raise RuntimeError(f"Import failed: HTTP {response.status_code} - {response.text[:500]}")
     return response.json() if response.text.strip() else {"status": "accepted"}
@@ -150,6 +181,92 @@ TRANSLATE_ERROR_STATES = {"ERROR"}
 TRANSLATE_PENDING_STATES = {"TRANSLATING", "READY_FOR_IMPORT"}
 
 
+
+# Artefact identity parameters (Phoenix "Artefact parameters"). All optional; omitting every
+# one reproduces the previous BOM-inferred behaviour byte for byte. They are validated here as
+# well as server-side so a malformed value fails locally with a usable message instead of after
+# an upload. Note they only change the persisted import on POST /assets/file/translate with a
+# PhxSbomSca: scanType against an org with in-house translation enabled - elsewhere Phoenix
+# validates and discards them.
+ARTEFACT_TYPES = ("BUILD_FILE", "CONTAINER")
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _container_artefact_fields(
+    container_name: Optional[str],
+    container_version: Optional[str],
+    container_digest: Optional[str],
+    registry: Optional[str],
+) -> Dict[str, str]:
+    """
+    Build the CONTAINER identity fields, treating whitespace-only input as absent.
+
+    Every value is stripped before it is tested, not after. Testing first meant a value such
+    as " " passed the truthiness check and was then stripped to "", so a required name could
+    end up sent as an empty parameter and an optional one as an empty string.
+    """
+    name = (container_name or "").strip()
+    if not name:
+        raise ValueError("container_name is required when artefact_type is CONTAINER")
+    fields: Dict[str, str] = {"containerName": name}
+
+    version = (container_version or "").strip()
+    if version:
+        fields["containerVersion"] = version
+
+    digest = (container_digest or "").strip()
+    if digest:
+        if not _DIGEST_RE.match(digest):
+            raise ValueError(
+                f"container_digest must look like sha256:<64 hex characters>, got {container_digest!r}"
+            )
+        fields["containerDigest"] = digest
+
+    host = (registry or "").strip()
+    if host:
+        fields["registry"] = host
+
+    return fields
+
+
+def build_artefact_fields(
+    artefact_type: Optional[str] = None,
+    build_file: Optional[str] = None,
+    container_name: Optional[str] = None,
+    container_version: Optional[str] = None,
+    container_digest: Optional[str] = None,
+    registry: Optional[str] = None,
+) -> Dict[str, str]:
+    """Validate the artefact parameters and return only those that are set."""
+    if not artefact_type:
+        return {}
+
+    normalised = artefact_type.strip().upper()
+    if normalised not in ARTEFACT_TYPES:
+        raise ValueError(
+            f"artefact_type must be one of {', '.join(ARTEFACT_TYPES)} (case-insensitive), "
+            f"got {artefact_type!r}"
+        )
+
+    fields: Dict[str, str] = {"artefactType": normalised}
+
+    if normalised == "BUILD_FILE":
+        candidate = (build_file or "").strip()
+        if candidate:
+            # Mirrors the server rule: relative only, no parent-directory segments.
+            if candidate.startswith("/") or ".." in candidate.split("/"):
+                raise ValueError(
+                    f"build_file must be a relative path without '..' segments, got {build_file!r}"
+                )
+            fields["buildFile"] = candidate
+    else:
+        fields.update(
+            _container_artefact_fields(container_name, container_version, container_digest, registry)
+        )
+
+    return fields
+
+
 def upload_sbom_file(
     cfg: PhoenixConfig,
     session: requests.Session,
@@ -159,6 +276,7 @@ def upload_sbom_file(
     file_path: str,
     auto_import: bool,
     scan_target: Optional[str],
+    artefact_fields: Optional[Dict[str, str]] = None,
 ) -> Dict:
     """
     Upload a plain SBOM for server-side dep-scan analysis.
@@ -178,6 +296,8 @@ def upload_sbom_file(
     }
     if scan_target:
         data["scanTarget"] = scan_target
+    if artefact_fields:
+        data.update(artefact_fields)
 
     with open(sbom_path, "rb") as handle:
         files = {"file": (os.path.basename(sbom_path), handle, "application/json")}

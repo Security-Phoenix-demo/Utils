@@ -6,6 +6,8 @@ components and vulnerabilities onto the Phoenix asset-import shape, and normalis
 """
 
 import json
+import re
+import urllib.parse
 import os
 from typing import Dict, List, Optional, Tuple
 
@@ -32,7 +34,10 @@ def read_sbom(path: str) -> Dict:
         raise ValueError(f"SBOM file must contain a JSON object, got {type(data).__name__} ({path})")
 
     bom_format = data.get("bomFormat")
-    if bom_format != "CycloneDX":
+    # Compared case-insensitively. The spec says "CycloneDX" and every generator used here emits
+    # exactly that, but some in-house scanners emit other casings and rejecting those is a
+    # pointless failure - the document is still CycloneDX.
+    if str(bom_format or "").lower() != "cyclonedx":
         hint = ""
         if "runs" in data:
             hint = " This looks like SARIF."
@@ -69,6 +74,11 @@ def build_component_maps(sbom: Dict) -> Tuple[Dict[str, str], List[Dict[str, str
     return ref_to_name, installed_software
 
 
+# effected.sub_component is varchar(1024); anything longer fails the import outright.
+LOCATION_MAX_LENGTH = 1024
+# Affected component refs shown inline in `location`; the rest are summarised as "(+N more)".
+LOCATION_MAX_REFS = 5
+
 SEVERITY_TEXT_MAP = {
     "critical": "10.0",
     "high": "8.0",
@@ -99,7 +109,10 @@ def normalize_severity(vuln: Dict) -> str:
 
     CycloneDX carries one rating per advisory source (ghsa, nvd, redhat, ...) in no
     guaranteed order, so the highest rating across every source is used rather than
-    the first one encountered. Scanners such as Trivy derive their own headline
+    the first one encountered. A vulnerability with no usable rating at all falls back to
+    5.0 (MEDIUM) rather than 0 or 1: dropping it under-reports, and LOW hides it beneath
+    most tenants' default threshold, so MEDIUM keeps it visible for triage.
+    Scanners such as Trivy derive their own headline
     severity the same way, which keeps imported severities aligned with the scan report.
     """
     ratings = vuln.get("ratings", [])
@@ -162,6 +175,36 @@ def parse_cwes(vuln: Dict) -> List[str]:
     return cwes
 
 
+def _format_location(affected_components: List[str], fallback: str) -> str:
+    """
+    Render a finding's `location` without ever losing the "(+N more)" suffix.
+
+    location lands in effected.sub_component, a varchar(1024): Postgres raises 22001
+    instead of truncating, so the value has to be capped here. Capping the joined string
+    afterwards cut the suffix off mid-word, which hid the fact that the list was partial
+    and left the last component severed at an arbitrary character. Room for the suffix is
+    reserved before joining instead, and the count covers every component the field does
+    not name - those dropped for readability and those dropped for length alike. The
+    complete list always stays in details.affected_components.
+    """
+    if not affected_components:
+        return fallback[:LOCATION_MAX_LENGTH]
+
+    total = len(affected_components)
+    for count in range(min(LOCATION_MAX_REFS, total), 0, -1):
+        omitted = total - count
+        suffix = f" (+{omitted} more)" if omitted else ""
+        body = ", ".join(affected_components[:count])
+        if len(body) + len(suffix) <= LOCATION_MAX_LENGTH:
+            return body + suffix
+
+    # One name on its own already exceeds the column: truncate that name, and keep the
+    # counter honest about the rest rather than reporting them as shown.
+    omitted = total - 1
+    suffix = f" (+{omitted} more)" if omitted else ""
+    return affected_components[0][: max(0, LOCATION_MAX_LENGTH - len(suffix))] + suffix
+
+
 def build_findings(sbom: Dict, ref_to_name: Dict[str, str], asset_key: str) -> List[Dict]:
     findings: List[Dict] = []
     for vuln in sbom.get("vulnerabilities", []):
@@ -174,17 +217,32 @@ def build_findings(sbom: Dict, ref_to_name: Dict[str, str], asset_key: str) -> L
             ref = affect.get("ref", "")
             if ref:
                 affected_components.append(ref_to_name.get(ref, ref))
-        location = ", ".join(affected_components[:5]) if affected_components else asset_key
+        location = _format_location(affected_components, asset_key)
 
         description = vuln.get("description") or f"Vulnerability {vuln_id} detected from CycloneDX SBOM"
-        remedy = vuln.get("recommendation") or "See vulnerability advisory and update the affected package"
+        # recommendation, then workaround, then a generic string. A vulnerability carrying a
+        # workaround but no recommendation would otherwise be reported with generic text in
+        # place of real remediation advice. Trivy emits neither field, but other generators
+        # (dep-scan VDRs) do. The fallback string is shared with the backend's server-side
+        # translation path so the same vulnerability reads identically whichever route it
+        # was imported by - keep the two in step if either changes.
+        remedy = (
+            vuln.get("recommendation")
+            or vuln.get("workaround")
+            or "See vulnerability advisory and update the affected package"
+        )
 
+        # Field limits follow the Phoenix schema rather than a round number.
+        # vulnerability.description and vulnerability.remedy are Postgres `text` - unbounded -
+        # so truncating them only discarded advisory content. The varchar(1024) limit on
+        # effected.sub_component is load-bearing and is applied by _format_location, which
+        # caps the value without severing the "(+N more)" suffix.
         finding = {
             "name": vuln_id,
-            "description": description[:500],
-            "remedy": remedy[:500],
+            "description": description,
+            "remedy": remedy,
             "severity": normalize_severity(vuln),
-            "location": location[:500],
+            "location": location,
             "referenceIds": parse_reference_ids(vuln),
         }
 
@@ -251,3 +309,47 @@ def build_payload(
             }
         ],
     }
+
+
+def container_identity_from_sbom(sbom: Dict) -> Dict[str, str]:
+    """
+    Pull image name, tag, digest and registry out of a container BOM's metadata.component.
+
+    Trivy records the image as name:tag in `name` and repeats the detail in a purl and in
+    aquasecurity properties. The digest is taken from the purl or RepoDigest; note it is
+    whichever digest the build environment had, and an image built but not yet pushed may have
+    none - so every field here is best-effort and absent keys are simply omitted.
+    """
+    component = (sbom.get("metadata") or {}).get("component") or {}
+    out: Dict[str, str] = {}
+
+    raw_name = str(component.get("name") or "")
+    if raw_name:
+        # "repo/image:tag" - split on the last colon only if it is not part of a port or digest.
+        if ":" in raw_name and "/" not in raw_name.rsplit(":", 1)[1]:
+            name, tag = raw_name.rsplit(":", 1)
+            out["name"], out["version"] = name, tag
+        else:
+            out["name"] = raw_name
+
+    if component.get("version"):
+        out["version"] = str(component["version"])
+
+    props = {p.get("name"): p.get("value") for p in component.get("properties") or []}
+    purl = str(component.get("purl") or "")
+
+    match = re.search(r"@(sha256:[0-9a-f]{64})", purl)
+    if match:
+        out["digest"] = match.group(1)
+    else:
+        repo_digest = str(props.get("aquasecurity:trivy:RepoDigest") or "")
+        match = re.search(r"(sha256:[0-9a-f]{64})", repo_digest)
+        if match:
+            out["digest"] = match.group(1)
+
+    registry = urllib.parse.parse_qs(urllib.parse.urlparse(purl).query).get("repository_url", [""])[0]
+    if registry:
+        # repository_url carries the full path; the registry host is its first segment.
+        out["registry"] = registry.split("/")[0]
+
+    return out

@@ -229,9 +229,10 @@ Requests submitted in isolation imported reliably every time.
 
 A collided request is lost, not merely slow. Every one observed sat in `TRANSLATING` for around an
 hour and then terminated in `ERROR: ResourceAccessException` - none ever recovered. That is
-consistent with a 60-minute server-side read timeout: the error surfaced is the one a Spring
-`RestTemplate` raises when a read timeout fires. The likely cause is limited concurrency in the
-analysis service, so simultaneous uploads queue behind one another until the caller gives up.
+consistent with the backend's own timeout: `DepscanServiceApiClient` calls the dep-scan service
+with `setReadTimeout(Duration.ofMinutes(60))`, and `ResourceAccessException` is what Spring's
+`RestTemplate` raises when a read timeout fires. The likely cause is limited concurrency on that
+service, so simultaneous uploads queue behind one another until the caller gives up.
 
 This matters because a CI fleet produces exactly that pattern - several repositories building at
 once, each uploading an SBOM. Until it is fixed server-side:
@@ -270,7 +271,7 @@ components but no vulnerabilities, the script warns rather than silently importi
 
 ```bash
 # from repo root
-cd Utils/sca-pipeline/sbom-single-repo
+cd Utils/SBOM-SCA-CONTAINER-PIPELINE/sbom-single-repo
 python3 -m pip install -r requirements.txt
 
 # import one SBOM (credentials resolved as described below)
@@ -466,6 +467,33 @@ the repository name by hand.
 `--wait` and `--no-auto-import` describe the asynchronous translate request, so passing either
 with `--method vulnerability` is rejected rather than silently ignored.
 
+### Artefact identity (sbom method)
+
+Declare what the SBOM describes instead of leaving Phoenix to infer it from the BOM. All
+optional; omitting `--artefact-type` reproduces the previous behaviour exactly.
+
+| Option | Artefact type | Purpose |
+| --- | --- | --- |
+| `--artefact-type BUILD_FILE\|CONTAINER` | both | Turns the rest on. Omit for inferred identity |
+| `--build-file PATH` | BUILD_FILE | Relative build file path, e.g. `services/api/pom.xml`. Defaults to `--file-path`. Rejected if absolute or containing `..` |
+| `--container-name NAME` | CONTAINER | Image name; required for CONTAINER |
+| `--container-version TAG` | CONTAINER | Image tag |
+| `--container-digest sha256:…` | CONTAINER | Must be `sha256:` plus 64 hex characters |
+| `--registry HOST` | CONTAINER | Registry host |
+
+For `CONTAINER`, anything not passed is read from the BOM's `metadata.component` - a Trivy image
+SBOM already carries name, tag, digest and registry - so a pipeline usually needs only
+`--artefact-type CONTAINER`. Explicit flags always win.
+
+Every option in this section belongs to `--method sbom`; passing any of them with
+`--method vulnerability` is rejected rather than silently ignored, because that method posts
+findings parsed from the BOM and sends no artefact identity at all. `--dry-run` validates them
+and prints the resolved identity without calling the API.
+
+These parameters take effect only against a Phoenix organization with in-house translation
+enabled; elsewhere Phoenix validates and discards them, which is why they are safe to send
+unconditionally.
+
 ### Connection and credentials
 
 | Option | Default | Purpose |
@@ -539,9 +567,7 @@ copy to commit.
 | `wait_for_completion` | `false` | bounded by the job's 45-minute timeout |
 
 Secrets: `PHOENIX_CLIENT_ID` and `PHOENIX_CLIENT_SECRET`. The tenant URL comes from the
-`PHOENIX_API_BASE_URL` repository variable, falling back to production. `utils_repo` and
-`utils_ref` select where the importer itself is checked out from, so you can pin it to a
-fork or an internal mirror.
+`PHOENIX_API_BASE_URL` repository variable, falling back to production.
 
 ### Choosing options
 
@@ -554,6 +580,30 @@ fork or an internal mirror.
 | Block the build until the import lands | `--method sbom --wait` (expect minutes, and see the concurrency note above) |
 | Stage an import for review | `--method sbom --no-auto-import` (add `--wait` to confirm it reached `READY_FOR_IMPORT`) |
 | Check identity and counts without uploading | `--dry-run --payload-out payload.json` |
+
+### Request size limits
+
+The API sits behind an AWS API Gateway HTTP API, which rejects any request over **10MB** at the
+edge. That is not a Phoenix setting and cannot be raised from the application side; the caller
+gets a gateway error rather than a Phoenix one, so the cause is not obvious from the failure.
+
+The two methods approach that ceiling along different curves:
+
+| Method | What crosses the gateway | Grows with | Measured |
+| --- | --- | --- | --- |
+| `vulnerability` | the JSON findings payload | number of findings, ~2.4KB each | 113 findings = 0.26MB; 4,000 = 9.2MB |
+| `sbom` | the inventory SBOM file | size of the image or dependency tree, **not** finding count | container inventory SBOM = 197KB (~52x headroom); build-file SBOM = 4KB |
+
+Two things follow that are easy to get backwards:
+
+- For the `sbom` method, a minimal application on a large base image is closer to the limit than
+  a heavily vulnerable application on a slim one. Vulnerability count is irrelevant here, because
+  Phoenix does the analysis after upload - the enriched SBOM never crosses the gateway.
+- For the `vulnerability` method, the reverse holds: findings are the whole payload.
+
+The importer warns above 8MB, naming the finding count, and turns a rejection into a message
+that explains it rather than surfacing the gateway's response body. If you hit it, split the scan
+by manifest or sub-project; retrying unchanged will not help.
 
 ### Exit codes
 
@@ -857,13 +907,42 @@ SBOM onto **one** `BUILD` asset keyed by the single `--file-path` you pass. Find
 own per-package `location`, so the data is correct, but the asset identity names only one manifest.
 For per-manifest identity, run the importer once per manifest with `--import-type merge`.
 
-## Related utilities
+## Utils repository map (top-level folders and purpose)
 
-This tool is one of several Phoenix Security utilities. The repository's top-level `README.md`
-lists them all - scanner ingestion, CI/CD policy gating, asset inventory, format conversion and
-reporting - with the directory each lives in.
+This utility is part of the broader `Utils/` ecosystem. Use this map as a quick index when you need related tooling.
 
-## Where to go next
+| Subfolder | Purpose |
+| --- | --- |
+| `Backstage Translator/` | Convert Backstage/ServiceNow catalog data into Phoenix-compatible YAML/config structures |
+| `Config_File_autogen/` | Auto-generate Phoenix configuration files from repository or metadata inputs |
+| `Gating/` | CI/CD policy gating (pass/fail) based on vulnerability and risk thresholds |
+| `Jenkins Integration/` | Jenkins pipeline integration templates/scripts for Phoenix workflows |
+| `Loading_Script_V2/` | Legacy scanner import (deprecated) |
+| `Loading_Script_V5/` | Multi-scanner import (canonical private copy: translators, service, lambda, synthetic tooling; sanitized for public repo) |
+| `Nucleus/` | Legacy Nucleus integration scripts |
+| `Nucleustophoenix/` | Migration tooling from Nucleus into Phoenix |
+| `Shodan conversion/` | Convert Shodan outputs into Phoenix-consumable formats |
+| `Test/` | Utility-level test assets/scratch validation content |
+| `asset-count-scripts/` | Asset counting/inventory scripts for cloud, git, and Wiz sources |
+| `asset-translator/` | Normalize and transform asset files into Phoenix-ready structures |
+| `client scripts/` | Client-specific translators/automation (for example Q2 and Okta workflows) |
+| `container scan/` | Container scan-related helper scripts/data transformations |
+| `container3rp/` | Third-party container report processing and Phoenix import support |
+| `csv_translator/` | Convert CSV/JSON vulnerability exports and upload to Phoenix |
+| `docs/` | Shared Utils architecture, operations, and development documentation |
+| `logos/` | Branding/media assets for Utils documentation and reporting |
+| `pentest-import/` | Import penetration-test findings from CSV-like sources |
+| `prowler extractor/` | Parse/reshape Prowler output for downstream ingestion/reporting |
+| `report-Team_dashboard_report/` | Team-focused dashboard report generation |
+| `report-asset_and_vulnerability_report/` | Combined asset + vulnerability report generation |
+| `report-dashboard/` | Executive dashboard/report generation (PDF/Excel) |
+| `report-vulnerability_report/` | Vulnerability-centric report generator |
+| `SBOM-SCA-CONTAINER-PIPELINE/` | SBOM/SCA and container scanning pipeline utilities (includes this `sbom-single-repo` tool) |
+| `technology-determination/` | Technology stack detection/classification using NVD/CPE mappings |
 
-- `./QUICK_START.md` - the short runbook: generate an SBOM, set credentials, import
-- `../README.md` - the other utilities in this repository and what each is for
+## Linked documentation (start here)
+
+- Utils system map: `../../UTILS_SYSTEM_MAP.md`
+- Utils docs router: `../../DOC_INDEX.md`
+- Utility selection guide: `../../UTILS_MASTER_INDEX.md`
+- SCA quick runbook: `./QUICK_START.md`

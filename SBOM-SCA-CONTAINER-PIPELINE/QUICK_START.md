@@ -4,7 +4,7 @@
 
 ```bash
 # from repository root
-cd Utils/sca-pipeline/sbom-single-repo
+cd Utils/SBOM-SCA-CONTAINER-PIPELINE/sbom-single-repo
 python3 -m pip install -r requirements.txt
 ```
 
@@ -107,18 +107,57 @@ Or use the ready-made `jenkins_sbom_single_repo_pipeline.groovy` and set `SCAN_M
 ## 8) Quick repo navigation commands
 
 ```bash
-# return to the repository root
-cd ..
+# return to Utils root
+cd ../..
 
-# inspect the available utilities
+# inspect top-level utilities
 /bin/ls -a
+
+# open ecosystem map
+open UTILS_SYSTEM_MAP.md
+
+# open docs router
+open DOC_INDEX.md
 ```
 
-## 9) Where to go next
+## 9) Utils subfolder purpose map
 
-- `./README.md` - the full reference: every option, both import methods, all three scanners,
-  and the Jenkins, GitHub Actions and Bitbucket pipelines
-- `../README.md` - the other utilities in this repository and what each is for
+Use this as a quick "what is where" reference when navigating `Utils/`.
+
+| Subfolder | Purpose |
+| --- | --- |
+| `Backstage Translator/` | Backstage/ServiceNow catalog translation into Phoenix data models |
+| `Config_File_autogen/` | Automated Phoenix configuration generation |
+| `Gating/` | Security policy gate execution in CI/CD |
+| `Jenkins Integration/` | Jenkins integration helpers |
+| `Loading_Script_V2/` | Legacy import scripts (deprecated) |
+| `Loading_Script_V5/` | Multi-scanner import (private repo canonical copy; sanitized export for public repo) |
+| `Nucleus/` | Legacy Nucleus integration |
+| `Nucleustophoenix/` | Nucleus-to-Phoenix migration utility |
+| `Shodan conversion/` | Shodan data conversion scripts |
+| `Test/` | Utility tests/scratch datasets |
+| `asset-count-scripts/` | Cloud/git/Wiz asset inventory counters |
+| `asset-translator/` | Asset normalization/translation scripts |
+| `client scripts/` | Client-specific translators and workflows |
+| `container scan/` | Container scan helper tools |
+| `container3rp/` | Third-party container report ingestion |
+| `csv_translator/` | CSV/JSON vulnerability conversion + upload |
+| `docs/` | Shared Utils documentation |
+| `logos/` | Branding assets |
+| `pentest-import/` | Pentest findings import |
+| `prowler extractor/` | Prowler output extraction/transform |
+| `report-Team_dashboard_report/` | Team dashboard reporting |
+| `report-asset_and_vulnerability_report/` | Asset and vulnerability reporting |
+| `report-dashboard/` | Executive dashboard reporting |
+| `report-vulnerability_report/` | Vulnerability-focused reporting |
+| `SBOM-SCA-CONTAINER-PIPELINE/` | SBOM/SCA and container pipeline utilities, including this one |
+| `technology-determination/` | Technology detection/classification |
+
+## 10) Linked docs (authoritative)
+
+- `../../UTILS_SYSTEM_MAP.md` - Utils system map and architecture overview
+- `../../DOC_INDEX.md` - docs router (best first stop)
+- `../../UTILS_MASTER_INDEX.md` - utility selection + shared config model
 
 ## Notes
 

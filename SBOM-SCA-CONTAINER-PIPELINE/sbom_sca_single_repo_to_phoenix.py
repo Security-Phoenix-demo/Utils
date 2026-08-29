@@ -29,8 +29,9 @@ import os
 import sys
 
 from ci_context import resolve_repo_context
-from cyclonedx_sbom import build_payload, read_sbom
+from cyclonedx_sbom import build_payload, container_identity_from_sbom, read_sbom
 from phoenix_client import (
+    build_artefact_fields,
     PhoenixConfig,
     build_session,
     get_access_token,
@@ -83,6 +84,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--scan-target", help="Scan target recorded on the import (sbom method)")
     parser.add_argument(
+        "--artefact-type",
+        choices=["BUILD_FILE", "CONTAINER"],
+        help=(
+            "sbom method: declare artefact identity explicitly instead of letting Phoenix infer "
+            "it from the BOM. Omit to keep the previous behaviour exactly."
+        ),
+    )
+    parser.add_argument("--build-file", help="BUILD_FILE: relative build file path, e.g. services/api/pom.xml")
+    parser.add_argument("--container-name", help="CONTAINER: image name, required with --artefact-type CONTAINER")
+    parser.add_argument("--container-version", help="CONTAINER: image tag")
+    parser.add_argument("--container-digest", help="CONTAINER: sha256:<64 hex>; derived from the SBOM when omitted")
+    parser.add_argument("--registry", help="CONTAINER: container registry host")
+    parser.add_argument(
         "--no-auto-import",
         action="store_true",
         help="sbom method: stage the translation but do not import it automatically",
@@ -105,8 +119,11 @@ def parse_args() -> argparse.Namespace:
             "exposes them on the wire - use it only for a local mock or lab endpoint."
         ),
     )
-    parser.add_argument("--verify-tls", action="store_true", help="Force TLS certificate verification")
-    parser.add_argument("--no-verify-tls", action="store_true", help="Disable TLS verification")
+    # Mutually exclusive: passing both used to resolve silently to --no-verify-tls, quietly
+    # turning verification off for someone who had asked for it in the same command.
+    tls = parser.add_mutually_exclusive_group()
+    tls.add_argument("--verify-tls", action="store_true", help="Force TLS certificate verification")
+    tls.add_argument("--no-verify-tls", action="store_true", help="Disable TLS verification")
     parser.add_argument("--dry-run", action="store_true", help="Build payload but do not call Phoenix")
     parser.add_argument("--payload-out", help="Write generated JSON payload to this file")
     return parser.parse_args()
@@ -155,6 +172,17 @@ def load_config(config_file: str, args: argparse.Namespace, require_credentials:
     if not wait_for_completion and options_section:
         wait_for_completion = options_section.get("wait_for_completion", "false").strip().lower() == "true"
 
+    for label, value in (
+        ("timeout_seconds", timeout_seconds),
+        ("poll_interval_seconds", poll_interval_seconds),
+        ("poll_timeout_seconds", poll_timeout_seconds),
+    ):
+        if value <= 0:
+            raise ValueError(
+                f"{label} must be greater than 0, got {value}. A zero or negative value either "
+                f"spins without pausing or expires before the first check."
+            )
+
     missing = []
     if require_credentials:
         if not client_id:
@@ -183,6 +211,55 @@ def load_config(config_file: str, args: argparse.Namespace, require_credentials:
     )
 
 
+def resolve_artefact_fields(args: argparse.Namespace, sbom: dict) -> dict:
+    """
+    Build the artefact parameters, filling container details from the BOM where not given.
+
+    A container BOM already carries image name, tag and digest in metadata.component, so a
+    pipeline that knows it is scanning an image need not restate them. Explicit flags always
+    win. Returns {} when --artefact-type is unset, reproducing the previous behaviour exactly.
+    """
+    if not args.artefact_type:
+        return {}
+
+    name = args.container_name
+    version = args.container_version
+    digest = args.container_digest
+    registry = args.registry
+
+    if args.artefact_type == "CONTAINER":
+        derived = container_identity_from_sbom(sbom)
+        name = name or derived.get("name")
+        version = version or derived.get("version")
+        digest = digest or derived.get("digest")
+        registry = registry or derived.get("registry")
+
+    build_file = args.build_file
+    if args.artefact_type == "BUILD_FILE" and not build_file:
+        build_file = args.file_path
+
+    return build_artefact_fields(
+        artefact_type=args.artefact_type,
+        build_file=build_file,
+        container_name=name,
+        container_version=version,
+        container_digest=digest,
+        registry=registry,
+    )
+
+
+def _await_translation(cfg: PhoenixConfig, args: argparse.Namespace, session, token, request_id) -> None:
+    """Poll the translate request and report where it landed."""
+    if not request_id:
+        raise RuntimeError("Cannot wait for completion: no request id returned by Phoenix")
+    final = wait_for_translate(cfg, session, token, request_id, auto_import=not args.no_auto_import)
+    print(
+        "Translation staged for review." if args.no_auto_import else "Import completed.",
+        flush=True,
+    )
+    print(json.dumps(final, indent=2)[:1000], flush=True)
+
+
 def run_sbom_upload(cfg: PhoenixConfig, args: argparse.Namespace, sbom: dict, context: dict) -> int:
     """
     Upload the SBOM file itself and let Phoenix derive vulnerabilities from it.
@@ -200,6 +277,13 @@ def run_sbom_upload(cfg: PhoenixConfig, args: argparse.Namespace, sbom: dict, co
     )
     print(f"scanType={scan_type}, importType={cfg.import_type}, repository={context['repo']}", flush=True)
 
+    # Resolved before the dry-run exit: a dry run exists to catch bad input without calling
+    # the API, so invalid artefact options must still fail here, and the identity derived from
+    # the BOM is exactly what a dry run is meant to show.
+    artefact_fields = resolve_artefact_fields(args, sbom)
+    if artefact_fields:
+        print("Artefact: " + ", ".join(f"{k}={v}" for k, v in sorted(artefact_fields.items())), flush=True)
+
     if args.dry_run:
         print("Dry-run enabled: no API call was made.", flush=True)
         return 0
@@ -215,22 +299,14 @@ def run_sbom_upload(cfg: PhoenixConfig, args: argparse.Namespace, sbom: dict, co
         file_path=context["file_path"],
         auto_import=not args.no_auto_import,
         scan_target=args.scan_target or context["file_path"],
+        artefact_fields=artefact_fields,
     )
     request_id = result.get("id") or result.get("requestId")
     print("SBOM uploaded successfully.", flush=True)
     print(json.dumps(result, indent=2)[:1000], flush=True)
 
     if cfg.wait_for_completion:
-        if not request_id:
-            raise RuntimeError("Cannot wait for completion: no request id returned by Phoenix")
-        final = wait_for_translate(
-            cfg, session, token, request_id, auto_import=not args.no_auto_import
-        )
-        print(
-            "Translation staged for review." if args.no_auto_import else "Import completed.",
-            flush=True,
-        )
-        print(json.dumps(final, indent=2)[:1000], flush=True)
+        _await_translation(cfg, args, session, token, request_id)
     return 0
 
 
@@ -276,6 +352,34 @@ def run_vulnerability_import(cfg: PhoenixConfig, args: argparse.Namespace, sbom:
     return 0
 
 
+_ARTEFACT_FLAGS = (
+    ("--artefact-type", "artefact_type"),
+    ("--build-file", "build_file"),
+    ("--container-name", "container_name"),
+    ("--container-version", "container_version"),
+    ("--container-digest", "container_digest"),
+    ("--registry", "registry"),
+)
+
+
+def _reject_artefact_options(args: argparse.Namespace) -> None:
+    """
+    Artefact identity describes the uploaded SBOM file, which the vulnerability method never sends.
+
+    run_vulnerability_import posts findings parsed out of the BOM and never calls
+    resolve_artefact_fields, so these flags previously did nothing and said nothing about it -
+    the same silent no-op --wait and --no-auto-import are rejected for.
+    """
+    used = [flag for flag, attr in _ARTEFACT_FLAGS if getattr(args, attr, None)]
+    if not used:
+        return
+    raise ValueError(
+        f"{' and '.join(used)} {'apply' if len(used) > 1 else 'applies'} only to --method sbom. "
+        f"The vulnerability method posts findings parsed from the BOM and sends no artefact "
+        f"identity, so these would be ignored. Drop them, or switch to --method sbom."
+    )
+
+
 def validate_method_options(cfg: PhoenixConfig, args: argparse.Namespace) -> None:
     """
     Reject options that only mean something for the sbom method.
@@ -302,6 +406,7 @@ def validate_method_options(cfg: PhoenixConfig, args: argparse.Namespace) -> Non
             f"posts findings synchronously, so there is no translation to wait for or stage. "
             f"Drop the flag, or switch to --method sbom."
         )
+    _reject_artefact_options(args)
     if cfg.wait_for_completion:
         print(
             "Warning: wait_for_completion is set but --method vulnerability imports "

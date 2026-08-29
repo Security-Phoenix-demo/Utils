@@ -3,6 +3,10 @@
 # Copy to .github/workflows/sbom-phoenix.yml in the repository you want to scan, and add two
 # repository secrets: PHOENIX_CLIENT_ID and PHOENIX_CLIENT_SECRET.
 #
+# If the importer lives in a private repository (see utils_repo below), also add
+# PHOENIX_UTILS_TOKEN with read access to it - the default github.token cannot read a
+# different private repository, and the checkout fails with a confusing 404.
+#
 # Callable two ways: manually via workflow_dispatch, or from another workflow via
 # workflow_call. There is deliberately no push trigger - concurrent uploads to the same
 # Phoenix organization collide server-side (see README), so scans are dispatched rather than
@@ -104,10 +108,6 @@ on:
       wait_for_completion:
         type: boolean
         default: false
-      utils_repo:
-        description: "Repository holding the importer (owner/name). Defaults to the public utilities repository"
-        type: string
-        default: ""
       utils_ref:
         description: "Ref of the Utils repository holding the importer"
         type: string
@@ -117,6 +117,9 @@ on:
         required: true
       PHOENIX_CLIENT_SECRET:
         required: true
+      PHOENIX_UTILS_TOKEN:
+        description: "Read access to the repository holding the importer. Only needed when that repository is private - github.token cannot read another private repository"
+        required: false
 
 permissions:
   contents: read
@@ -129,9 +132,6 @@ jobs:
     env:
       SBOM_FILE: ${{ github.workspace }}/sbom.cdx.json
       SCAN_REPORTS: ${{ runner.temp }}/phoenix-sbom-reports
-      # Layout of the checked-out importer. The public repository keeps it at the top
-      # level; a vendored copy may nest it - override here if so.
-      IMPORTER_DIR: .phoenix-utils/sbom-single-repo
       TRIVY_IMAGE: aquasec/trivy:0.74.0
       DEPSCAN_IMAGE: ghcr.io/owasp-dep-scan/dep-scan@sha256:c305f241a3c2e35a90472ef7cb971b03904f719a6b736ab40b4a0039ce8470c4
       DEPSCAN_VDB_VOLUME: depscan-vdb
@@ -304,19 +304,16 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Where the importer itself comes from. Defaults to the public utilities repository;
-      # point utils_repo at your own fork or mirror if you vendor it internally. A private
-      # source additionally needs PHOENIX_UTILS_TOKEN with read access to it.
       - name: Check out the Phoenix importer
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.utils_repo || 'securityphoenix/Utils-PUB' }}
+          repository: securityphoenix/autoconfig-priv-PYRUS-PRIV-NEW
           ref: ${{ inputs.utils_ref || 'main' }}
           path: .phoenix-utils
           token: ${{ secrets.PHOENIX_UTILS_TOKEN || github.token }}
 
       - name: Install importer dependencies
-        run: python3 -m pip install --disable-pip-version-check -r "$IMPORTER_DIR/requirements.txt"
+        run: python3 -m pip install --disable-pip-version-check -r .phoenix-utils/Utils/SBOM-SCA-CONTAINER-PIPELINE/sbom-single-repo/requirements.txt
 
       - name: Send to Phoenix
         env:
@@ -333,7 +330,7 @@ jobs:
           wait_flag=""
           if [ "$METHOD" = "sbom" ] && [ "$WAIT" = "true" ]; then wait_flag="--wait"; fi
 
-          python3 "$IMPORTER_DIR/sbom_sca_single_repo_to_phoenix.py" \
+          python3 .phoenix-utils/Utils/SBOM-SCA-CONTAINER-PIPELINE/sbom-single-repo/sbom_sca_single_repo_to_phoenix.py \
             --sbom-file "$SBOM_FILE" \
             --file-path "$FILE_PATH" \
             --import-type "$IMPORT_TYPE" \
