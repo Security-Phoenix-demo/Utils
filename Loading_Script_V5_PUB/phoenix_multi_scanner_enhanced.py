@@ -609,7 +609,13 @@ class EnhancedMultiScannerImportManager:
                 if translator.can_handle(file_path):
                     return translator
             except Exception as e:
-                logger.debug(f"Translator {translator.__class__.__name__} failed to check file: {e}")
+                logger.warning(
+                    "Translator %s failed to check file %s: %s",
+                    translator.__class__.__name__,
+                    file_path,
+                    e,
+                    exc_info=True,
+                )
         
         return None
     
@@ -687,6 +693,16 @@ class EnhancedMultiScannerImportManager:
                         'error': f'Could not detect scanner type for {file_path}',
                         'file_path': file_path
                     }
+
+            if not translator:
+                error = f"Could not resolve translator for scanner type '{scanner_type}' file {file_path}"
+                logger.error(error)
+                return {
+                    'success': False,
+                    'error': error,
+                    'file_path': file_path,
+                    'scanner_type': scanner_type,
+                }
             
             # Step 3: Parse file to assets (pass translator object directly and asset_name)
             self._apply_tv_tags_to_translator(translator, tv_tags)
@@ -743,9 +759,27 @@ class EnhancedMultiScannerImportManager:
                 # Traditional single-request import using API client
                 from phoenix_import_refactored import PhoenixAPIClient
                 api_client = PhoenixAPIClient(self.phoenix_config)
-                result = api_client.import_assets(
+                request_id, response_data = api_client.import_assets(
                     assets, assessment_name, asset_sub_type=asset_sub_type
                 )
+                import_failed = (
+                    isinstance(response_data, dict)
+                    and str(response_data.get('status', '')).lower() in {'error', 'failed'}
+                )
+                if import_failed or (request_id is None and response_data is None):
+                    error_msg = (
+                        response_data.get('message')
+                        if isinstance(response_data, dict)
+                        else None
+                    ) or 'Phoenix import failed without an error message'
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'file_path': file_path,
+                        'scanner_type': detected_scanner,
+                        'assessment_name': assessment_name,
+                        'batching_used': False,
+                    }
                 return {
                     'success': True,
                     'file_path': file_path,
@@ -754,13 +788,12 @@ class EnhancedMultiScannerImportManager:
                     'assets_imported': len(assets),
                     'vulnerabilities_imported': sum(len(a.findings) for a in assets),
                     'import_type': import_type,
-                    'request_id': result.get('request_id'),
+                    'request_id': request_id,
                     'batching_used': False
                 }
             
         except Exception as e:
-            logger.error(f"❌ Enhanced processing failed for {file_path}: {e}")
-            logger.debug(traceback.format_exc())
+            logger.exception("Enhanced processing failed for %s: %s", file_path, e)
             return {
                 'success': False,
                 'error': str(e),
@@ -886,12 +919,12 @@ class EnhancedMultiScannerImportManager:
             file_path = os.path.abspath(file_path)
             logger.debug(f"Converted file path to absolute: {file_path}")
         
-        # Check if we received a translator object directly
-        from scanner_translators.base_translator import ScannerTranslator
-        if isinstance(translator_or_name, ScannerTranslator):
-            # Use the provided translator directly
+        # Duck-type translators: Grype/Trivy instances can be a different ScannerTranslator
+        # class object when /parent and the image copy load the module twice.
+        if hasattr(translator_or_name, "parse_file") and hasattr(translator_or_name, "can_handle") \
+                and not isinstance(translator_or_name, (str, bytes)):
             translator = translator_or_name
-            logger.debug(f"Using provided translator: {translator.__class__.__name__}")
+            logger.info("Using provided translator: %s", translator.__class__.__name__)
         else:
             # Legacy path: translator name provided, need to find it
             scanner_type_str = str(translator_or_name).lower() if translator_or_name else ''
@@ -943,19 +976,21 @@ class EnhancedMultiScannerImportManager:
             translator.asset_name_override = asset_name
             logger.info(f"🏷️ Set asset name override on translator: {asset_name}")
         
-        # Parse with translator-specific parameters when supported
-        if translator_class_name == 'TrivyTranslator':
-            assets = translator.parse_file(file_path, asset_type_override=asset_type)
-        elif asset_name and translator_class_name in ['PhoenixCSVTranslator', 'Rapid7CSVTranslator', 'AquaScanTranslator', 'AquaTranslator']:
-            logger.info(f"🏷️ Passing asset name override to {translator_class_name}: {asset_name}")
-            try:
-                assets = translator.parse_file(file_path, asset_name_override=asset_name)
-            except TypeError:
-                # Fallback if translator doesn't support asset_name_override parameter
-                logger.warning(f"⚠️ {translator_class_name} doesn't support asset_name_override parameter, using default name")
+        try:
+            if translator_class_name == 'TrivyTranslator':
+                assets = translator.parse_file(file_path, asset_type_override=asset_type)
+            elif asset_name and translator_class_name in ['PhoenixCSVTranslator', 'Rapid7CSVTranslator', 'AquaScanTranslator', 'AquaTranslator']:
+                logger.info(f"🏷️ Passing asset name override to {translator_class_name}: {asset_name}")
+                try:
+                    assets = translator.parse_file(file_path, asset_name_override=asset_name)
+                except TypeError:
+                    logger.warning(f"⚠️ {translator_class_name} doesn't support asset_name_override parameter, using default name")
+                    assets = translator.parse_file(file_path)
+            else:
                 assets = translator.parse_file(file_path)
-        else:
-            assets = translator.parse_file(file_path)
+        except Exception as e:
+            logger.exception("Failed to parse %s with %s: %s", file_path, translator_class_name, e)
+            raise ValueError(f"Failed to parse {file_path} with {translator_class_name}: {e}") from e
         
         # Override asset type for non-Trivy translators (Trivy couples type + attributes internally)
         if asset_type and translator_class_name != 'TrivyTranslator':
@@ -1032,6 +1067,8 @@ class EnhancedMultiScannerImportManager:
                 }
                 for r in failed_batches
             ]
+            from import_error_reporting import format_batch_session_error
+            result['error'] = format_batch_session_error(session)
         
         return result
     

@@ -1026,7 +1026,10 @@ class PhoenixAPIClient:
                 "Asset Import", 
                 operation="import_assets"
             )
-            return None, None
+            return None, {
+                "status": "error",
+                "message": "Phoenix authentication failed: no access token",
+            }
         
         # Convert assets to Phoenix format
         phoenix_assets = []
@@ -1165,19 +1168,20 @@ class PhoenixAPIClient:
                 
                 return request_id, response_data
             else:
-                error_msg = f"Failed to import assets: {response.status_code} - {response.text}"
+                from import_error_reporting import format_phoenix_http_error
+                error_msg = format_phoenix_http_error(response.status_code, response.text)
                 logger.error(error_msg)
                 error_tracker.log_error(
                     Exception(error_msg), 
                     "Asset Import", 
                     operation="import_assets"
                 )
-                return None, None
+                return None, {"status": "error", "message": error_msg}
                 
         except Exception as e:
             logger.error(f"Error importing assets: {e}")
             error_tracker.log_error(e, "Asset Import", operation="import_assets")
-            return None, None
+            return None, {"status": "error", "message": str(e)}
     
     def wait_for_import_completion(self, request_id: str) -> Optional[Dict]:
         """Wait for import to complete"""
