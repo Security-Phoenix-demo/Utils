@@ -319,15 +319,13 @@ class EnhancedPhoenixImportManager(PhoenixImportManager):
                 # Check if import actually succeeded
                 # Phoenix API can return success without a request ID for synchronous imports
                 if request_id is None and response_data is None:
-                    # No request ID and no response data means failure
-                    raise Exception("Import failed: No response from API")
+                    raise Exception("Phoenix import failed: empty API response")
                 
-                # Check if response_data indicates failure
                 if isinstance(response_data, dict):
-                    status = response_data.get('status', '').lower()
+                    status = str(response_data.get('status', '')).lower()
                     if status in ['error', 'failed']:
-                        error_msg = response_data.get('message', 'Unknown error')
-                        raise Exception(f"Import failed: {error_msg}")
+                        error_msg = response_data.get('message') or "Phoenix import failed without an error message"
+                        raise Exception(error_msg)
 
                 return BatchResult(
                     batch_number=batch_number,
