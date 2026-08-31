@@ -58,7 +58,7 @@ jq -e 'type == "object"' "$OUT_FILE" >/dev/null \
 # list. Inside `map()` over securityIssues, `.packageUrl` would refer to the
 # issue object (which has no such field), leaving Phoenix's required `location`
 # field empty.
-jq --arg app "$APP_PUBLIC_ID" '
+jq --arg app "$APP_PUBLIC_ID" --arg stage "$STAGE" '
   .matchSummary //= {totalComponentCount: ((.components // []) | length), knownComponentCount: ((.components // []) | length)}
   # Stable per-application asset identity. Keying the asset on a component (e.g.
   # components[0].packageUrl) both drifts between scans and collides across
@@ -98,7 +98,13 @@ jq --arg app "$APP_PUBLIC_ID" '
           description: ((.threatCategory // "security") + " issue "
                         + (.reference // .id // "unknown")
                         + " in " + $pkg),
-          fix: (.remediation // .status // "Review in Sonatype Nexus IQ")
+          # `.status` is deliberately absent from this chain: Nexus IQ
+          # securityIssues carry no `remediation` field and `.status` is the
+          # issue workflow state ("Open"), so including it rendered every
+          # Phoenix remedy as the literal string "Open".
+          fix: ("Review " + (.reference // .id // "this issue")
+                + " for " + $pkg + " in Sonatype Nexus IQ"
+                + " (application " + $app + ", stage " + $stage + ")")
         }))
       end
     ))

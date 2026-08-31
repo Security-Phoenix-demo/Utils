@@ -61,6 +61,18 @@ if [[ "$run_xray" == false && "$run_sonatype" == false ]]; then
   exit 1
 fi
 
+# Validate the scanner tokens up front rather than after a long export. A token
+# that is not defined in the local scanner_field_mappings.yaml either resolves to
+# a hard-coded translator that rejects this normalized shape, or falls through to
+# whatever the bundled mapping scores highest - both import zero findings without
+# raising an error.
+if [[ "$run_xray" == true ]]; then
+  phoenix_assert_local_mapping "${XRAY_V5_SCANNER:-jfrog_xray_unified}" || exit 1
+fi
+if [[ "$run_sonatype" == true ]]; then
+  phoenix_assert_local_mapping "${SONATYPE_V5_SCANNER:-sonatype}" || exit 1
+fi
+
 echo "== Phoenix on-prem scanner export =="
 echo "   assessment : $PHOENIX_ASSESSMENT"
 echo "   importType : $IMPORT_TYPE"

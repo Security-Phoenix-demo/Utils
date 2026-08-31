@@ -3,8 +3,9 @@
 # export_xray.sh - export a JFrog X-Ray vulnerabilities report to JSON.
 #
 # X-Ray Reports API flow:
-#   1) POST /xray/api/v1/reports/vulnerabilities
-#   2) POST /xray/api/v1/reports/vulnerabilities/{id}
+#   1) POST /xray/api/v1/reports/vulnerabilities        (generate)
+#   2) GET  /xray/api/v1/reports/{id}                   (poll until completed)
+#   3) POST /xray/api/v1/reports/vulnerabilities/{id}   (page the content)
 #
 # Requires: bash, curl, jq.
 # Reads config from the environment. Prints the written report path on the last
@@ -61,35 +62,81 @@ report_id="$(curl -fsS -X POST "$gen_url" "${AUTH[@]}" \
              | jq -er '.report_id')"
 echo "   report_id: $report_id" >&2
 
-PAGE_SIZE=100
-content_url="${API}/reports/vulnerabilities/${report_id}?num_of_rows=${PAGE_SIZE}&page_num="
-page=1
-tries=0
 max_tries=60
+
+# Wait for the report to finish generating BEFORE paging its content.
+#
+# The previous version polled the *content* endpoint and read `.status // "ready"`
+# from that response. The content response carries no status field, so the
+# fallback made every report look ready on the first call and a still-generating
+# report was written out empty or partial, with exit 0. Report state lives on
+# GET /xray/api/v1/reports/{id} instead.
+#
+# Some X-Ray versions do not expose that endpoint to every token; if it is not
+# readable we warn and fall back to paging immediately rather than hard-failing
+# a previously working setup.
+echo ">> Waiting for report to complete..." >&2
+status_url="${API}/reports/${report_id}"
+# Project-scoped reports are only addressable with the same projectKey used to
+# generate them; without it this 404s and we would fall back on every run.
+[[ -n "${XRAY_PROJECT_KEY:-}" ]] && status_url="${status_url}?projectKey=${project_key_enc}"
+tries=0
+if status_resp="$(curl -fsS "$status_url" "${AUTH[@]}" 2>/dev/null)"; then
+  while :; do
+    status="$(jq -r '(.status // "") | ascii_downcase' <<<"$status_resp")"
+    case "$status" in
+      completed|complete|ready)
+        echo "   status: $status" >&2
+        break
+        ;;
+      failed|aborted|cancelled|canceled)
+        echo "ERROR: X-Ray report $report_id ended with status '$status'." >&2
+        exit 1
+        ;;
+    esac
+
+    tries=$((tries + 1))
+    if (( tries > max_tries )); then
+      echo "ERROR: timed out after $(( max_tries * 5 ))s waiting for report $report_id (last status: ${status:-unknown})" >&2
+      exit 1
+    fi
+    echo "   report not ready (${status:-unknown}), waiting... ($tries/$max_tries)" >&2
+    sleep 5
+
+    if ! status_resp="$(curl -fsS "$status_url" "${AUTH[@]}")"; then
+      echo "ERROR: could not read status for report $report_id." >&2
+      exit 1
+    fi
+  done
+else
+  echo "   WARNING: GET ${API}/reports/${report_id} is not readable with this token;" >&2
+  echo "            cannot confirm the report finished generating. Rows may be partial." >&2
+fi
+
+PAGE_SIZE=100
+# Page a completed report. XRAY_ORDER_BY is optional and off by default: X-Ray
+# only guarantees a stable page order when the result set is sorted, but the
+# valid order_by values differ between X-Ray versions and an unsupported value
+# 400s the whole export. Set it once you have confirmed a valid field for your
+# version (e.g. severity). Waiting for `completed` above is what makes paging a
+# materialized result set rather than a moving target.
+content_url="${API}/reports/vulnerabilities/${report_id}?num_of_rows=${PAGE_SIZE}"
+if [[ -n "${XRAY_ORDER_BY:-}" ]]; then
+  content_url="${content_url}&order_by=$(jq -rn --arg v "$XRAY_ORDER_BY" '$v|@uri')&direction=${XRAY_ORDER_DIRECTION:-asc}"
+fi
+content_url="${content_url}&page_num="
+page=1
 tmp="$(mktemp)"
 trap 'rm -f "$tmp" "${tmp}.n"' EXIT
 echo '[]' >"$tmp"
 
 while :; do
-  # Distinguish a transport/auth failure from "the report is still generating".
-  # With `|| true` a 401 looked identical to "not ready" and burned all 60
-  # retries before reporting a misleading timeout.
+  # Distinguish a transport/auth failure from an empty page. With `|| true` a
+  # 401 looked identical to "no more rows" and silently truncated the export.
   if ! resp="$(curl -fsS -X POST "${content_url}${page}" "${AUTH[@]}" \
                     -H 'Content-Type: application/json' -d '{"filters":{}}')"; then
     echo "ERROR: X-Ray report request failed (page $page). Check JFROG_URL, JFROG_TOKEN and token permissions." >&2
     exit 1
-  fi
-
-  status="$(jq -r '.status // "ready"' <<<"$resp")"
-  if [[ "$status" != "ready" && "$status" != "completed" ]]; then
-    tries=$((tries + 1))
-    if (( tries > max_tries )); then
-      echo "ERROR: timed out after $(( max_tries * 5 ))s waiting for report $report_id (last status: $status)" >&2
-      exit 1
-    fi
-    echo "   report not ready ($status), waiting... ($tries/$max_tries)" >&2
-    sleep 5
-    continue
   fi
 
   rows="$(jq -c '.rows // []' <<<"$resp")"
