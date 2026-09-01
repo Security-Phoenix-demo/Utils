@@ -107,37 +107,42 @@ loaded. The bundled mapping is not read during these runs, and the two files are
 never merged.
 
 **This folder's mapping is not an optimisation, it is a prerequisite.** The
-toolkit's bundled `scanner_field_mappings.yaml` opens `scanners:` at line 44 and
-closes it at line 1470; the ~167 scanner blocks appended after
-`asset_type_detection:` (line 1492) are parsed as children of *that* key
-instead. `yaml.safe_load` therefore exposes only 36 of the advertised 200
-scanners, and both `jfrog_xray_unified` (line 3598) and `sonatype` (line 5211)
-are among the unreachable ones:
+bundled `scanner_field_mappings.yaml` defines 191 scanners but, until the fix in
+#28, exposed only 36 of them: `default_severity_mappings:`
+and `asset_type_detection:` were inserted in the middle of the `scanners:` block,
+so the 155 definitions after them parsed as children of `asset_type_detection:`.
+Both `jfrog_xray_unified` and `sonatype` were among the unreachable ones.
+
+Loading one of these reports against the bundled file did not fail — it scored
+the remaining 36 entries and picked a wrong winner, yielding zero findings:
 
 ```
-scanners loaded:                  36
-scanner keys present in text:    200
-'jfrog_xray_unified' in scanners: False
-'sonatype' in scanners:           False
+scanners reachable: 36 of 191
+X-Ray export     -> nuclei    (WEB,       0 findings)
+Sonatype export  -> twistlock (CONTAINER, 0 findings)
 ```
 
-So there is no bundled definition for either scanner to fall back to. Loading
-one of these reports against the bundled file does not fail — it scores the
-remaining 36 entries and picks the best match, which is `gitleaks` (CODE) for
-the X-Ray export and `twistlock` (CONTAINER) for the Sonatype export, each
-yielding zero findings and zero asset attributes.
+**Loading from this folder is still required after that fix.** With all 191
+scanners reachable the two reports resolve to the right entries, but the bundled
+definitions do not fit the shapes these exporters emit:
 
-Two rules follow:
+- bundled `sonatype` reads root-level `vulnerabilities[]`, not
+  `components[].vulnerabilities[]`, and is typed `INFRA` — it yields 0 findings
+  and a throwaway `scanner-host-<timestamp>` asset on every run.
+- bundled `jfrog_xray_unified` maps the rows correctly but supplies no
+  `buildFile`, which `BUILD` requires, so the asset arrives with no attributes.
+  It also writes `origin` unquoted, which `FieldMapper` reads as a field path
+  rather than a literal — a defect shared by all 195 bundled formats.
+
+The copy in this folder fixes both for these two shapes. Three rules follow:
 
 - **Always invoke the loader with this folder as the working directory.**
   `phoenix_load_v5` enforces it; a hand-rolled `python3 ../…` command does not.
 - Any scanner loaded from this folder must be defined in this file, and
   `file_patterns` must stay narrow. A bare `*.json` pattern would also match the
   other exporter's output and silently mis-map it.
-
-The bundled-mapping nesting bug is a pre-existing toolkit issue and is
-deliberately not fixed here — it costs the V5 loader 164 of its 200 scanners and
-should be tracked separately.
+- Write literals in `field_mappings.asset` as `'"value"'`. Bare words are
+  treated as field paths and resolve to nothing.
 
 ## Asset Model
 
