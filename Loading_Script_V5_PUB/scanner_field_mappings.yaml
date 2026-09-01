@@ -1466,44 +1466,6 @@ scanners:
           "HIGH": "8.0"
           "CRITICAL": "10.0"
 
-# Default severity mappings for common patterns
-default_severity_mappings:
-  numeric_1_5:
-    "1": "2.0"
-    "2": "2.0"
-    "3": "5.0"
-    "4": "8.0"
-    "5": "10.0"
-  
-  text_standard:
-    "info": "1.0"
-    "informational": "1.0"
-    "low": "2.0"
-    "medium": "5.0"
-    "high": "8.0"
-    "critical": "10.0"
-  
-  cvss_score:
-    # Direct CVSS score mapping (0.0-10.0)
-    range: [0.0, 10.0]
-    format: "float_to_string"
-
-# Asset type detection rules
-asset_type_detection:
-  patterns:
-    web_indicators: ["url", "http", "https", "domain", "website", "webapp"]
-    container_indicators: ["image", "docker", "container", "dockerfile", "registry"]
-    infra_indicators: ["ip", "hostname", "server", "host", "network"]
-    code_indicators: ["source", "code", "repository", "project", "file"]
-    cloud_indicators: ["aws", "azure", "gcp", "cloud", "provider"]
-  
-  default_by_scanner:
-    acunetix: "WEB"
-    anchore_grype: "CONTAINER"
-    aqua: "CONTAINER"
-    qualys: "INFRA"
-    sonarqube: "CODE"
-    tenable: "INFRA"
 # Progress: 1/167 - anchore_engine
 
   # Anchore Engine Scanner
@@ -6132,3 +6094,42 @@ asset_type_detection:
           "Low": "2.0"
           "Negligible": "1.0"
 
+
+# Default severity mappings for common patterns
+default_severity_mappings:
+  numeric_1_5:
+    "1": "2.0"
+    "2": "2.0"
+    "3": "5.0"
+    "4": "8.0"
+    "5": "10.0"
+  
+  text_standard:
+    "info": "1.0"
+    "informational": "1.0"
+    "low": "2.0"
+    "medium": "5.0"
+    "high": "8.0"
+    "critical": "10.0"
+  
+  cvss_score:
+    # Direct CVSS score mapping (0.0-10.0)
+    range: [0.0, 10.0]
+    format: "float_to_string"
+
+# Asset type detection rules
+asset_type_detection:
+  patterns:
+    web_indicators: ["url", "http", "https", "domain", "website", "webapp"]
+    container_indicators: ["image", "docker", "container", "dockerfile", "registry"]
+    infra_indicators: ["ip", "hostname", "server", "host", "network"]
+    code_indicators: ["source", "code", "repository", "project", "file"]
+    cloud_indicators: ["aws", "azure", "gcp", "cloud", "provider"]
+  
+  default_by_scanner:
+    acunetix: "WEB"
+    anchore_grype: "CONTAINER"
+    aqua: "CONTAINER"
+    qualys: "INFRA"
+    sonarqube: "CODE"
+    tenable: "INFRA"
