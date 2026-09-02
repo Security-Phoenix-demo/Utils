@@ -1,0 +1,50 @@
+{
+  "importType": "merge",
+  "assessment": {
+    "assetType": "BUILD",
+    "name": "single-repo-sca-sbom"
+  },
+  "assets": [
+    {
+      "attributes": {
+        "buildFile": "acme/payments/package-lock.json:main",
+        "origin": "cyclonedx-sca"
+      },
+      "tags": [
+        {
+          "key": "scanner",
+          "value": "cyclonedx"
+        },
+        {
+          "key": "scanType",
+          "value": "sca"
+        },
+        {
+          "key": "repository",
+          "value": "acme/payments"
+        },
+        {
+          "key": "branch",
+          "value": "main"
+        },
+        {
+          "key": "sourceFile",
+          "value": "package-lock.json"
+        },
+        {
+          "key": "assetKeyMode",
+          "value": "repo/file:branch"
+        }
+      ],
+      "installedSoftware": [
+        {
+          "vendor": "unknown",
+          "name": "lodash",
+          "version": "4.17.21",
+          "cpe": "pkg:npm/lodash@4.17.21"
+        }
+      ],
+      "findings": []
+    }
+  ]
+}
