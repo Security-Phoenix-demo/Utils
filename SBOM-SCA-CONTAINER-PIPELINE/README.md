@@ -1,948 +1,245 @@
-# sbom-single-repo
+# ci-purple-ingest
 
-Single-repo SCA utility for importing CycloneDX SBOM findings into Phoenix.
+CI-provider-agnostic client for Phoenix's **CI-PURPLE SBOM ingest** contract
+(`POST /api/v1/external/sca/ingest` and its status/result/retry siblings) - a different, newer
+API surface from the sibling [`sbom-single-repo/`](../sbom-single-repo/README.md) tool, which keeps
+targeting Phoenix's older `/v1/import/assets*` routes unchanged.
 
-## Purpose
+## Naming/placement decision
 
-This utility is designed for teams that want to import **one repository SBOM at a time**
-into Phoenix with a stable build-oriented identity.
+This lives in its own sibling directory, `Utils/SBOM-SCA-CONTAINER-PIPELINE/ci-purple-ingest/`,
+rather than as a new mode on `sbom-single-repo/sbom_sca_single_repo_to_phoenix.py` or a bare
+sibling script in that directory. Reasoning:
 
-It specifically:
+- **Genuinely different API surface.** Auth is a scoped-key-to-short-lived-token exchange (not
+  `client_id`/`client_secret` HTTP Basic), the ingest call is asynchronous with a job id to poll
+  (not a synchronous import), and the request/response shapes share no fields with the older
+  contract's payload.
+- **Different failure/retry model.** The new contract is idempotent (a duplicate submission
+  returns the SAME job) and has its own server-side job-retry endpoint; the old contract's own
+  `phoenix_client.py` explicitly does NOT retry its POST because it is non-idempotent. Folding both
+  into one CLI would mean two incompatible retry philosophies behind one `--method` flag.
+- **What IS reused**: `cyclonedx_sbom.read_sbom`'s file-shape checks were ported near-verbatim into
+  `ci_purple_sbom.read_sbom` (see that module's docstring) - the two contracts need the identical
+  "is this actually a CycloneDX JSON document" check. Everything else in `cyclonedx_sbom.py`
+  (`build_payload`, finding extraction, severity mapping) is specific to the OLD payload shape and
+  was not reused, because the new contract embeds the CycloneDX document close to as-is rather than
+  parsing findings out of it client-side.
+- A brand-new `ci_context.py` was written rather than extending the existing one, because the new
+  contract needs a full git remote URL + full 40-hex commit SHA + auto-detected provider (the old
+  one derives an `owner/repo` string and requires an explicit `--from-*-env` flag) - the shapes are
+  different enough that adapting the existing file in place would have made it harder to read for
+  users of either tool, not easier.
 
-- Reads one CycloneDX JSON SBOM file
-- Builds one Phoenix `BUILD` asset identity using `repo/file:branch`
-- Imports vulnerabilities and component metadata through Phoenix asset import APIs
-- Preserves source context (repository, file path, branch, and CI metadata) using tags
-
-Use this when your pipeline produces a per-repo SBOM (GitHub, Bitbucket Cloud, or Bitbucket
-on-prem CI) and you want predictable mapping between SBOM source and Phoenix `BUILD` assets.
-
-This utility creates one `BUILD` asset using an asset identity format:
-
-- `repo/file:branch`
-
-Example:
-
-- `acme/payments/package-lock.json:main`
-
-It can also auto-read Bitbucket Pipeline metadata with `--from-bitbucket-env`.
-
-## Why this utility
-
-Phoenix currently supports `BUILD` imports through `buildFile` and related metadata.  
-If your preferred source identity model (`repo/file:branch`) is not natively modeled yet, this utility encodes it into:
-
-- `attributes.buildFile`
-- tags (`repository`, `sourceFile`, `branch`, `assetKeyMode`)
-
-This keeps imports usable now while preserving your desired identity convention.
-
-## What it imports
-
-- CycloneDX JSON SBOM (`bomFormat: CycloneDX`)
-- Vulnerabilities as Phoenix findings
-- Components as `installedSoftware`
+The existing `sbom-single-repo/` tool's behavior is unchanged by this addition.
 
 ## Files
 
-- `sbom_sca_single_repo_to_phoenix.py` - CLI entry point (deploy the four `.py` files together)
-- `phoenix_client.py` - configuration and every Phoenix HTTP call
-- `cyclonedx_sbom.py` - CycloneDX parsing, severity mapping, payload construction
-- `ci_context.py` - repository and CI metadata resolution
-- `jenkins_sbom_single_repo_pipeline.groovy` - Jenkins pipeline (both methods, both scan modes)
-- `github-actions-sbom-phoenix.yml.example` - GitHub Actions workflow (same matrix)
-- `bitbucket-pipelines.yml.example` - Bitbucket Pipelines example
-- `depscan_vdb_warm.sh` - pre-populate the dep-scan vulnerability DB on a build agent
-- `local-jenkins/` - throwaway local Jenkins that runs the whole pipeline against a fake build
-  and a fake container image (see [Testing it locally](#testing-it-locally-with-jenkins))
-- `config.ini.template` - config template
-- `requirements.txt` - Python dependencies
-- `QUICK_START.md` - fast setup/run
+| File | Purpose |
+| --- | --- |
+| `ci_purple_sbom_to_phoenix.py` | CLI entry point (deploy all four `.py` files together) |
+| `ci_context.py` | CI-provider auto-detection (GitHub Actions, Jenkins, Azure DevOps, Bitbucket) and git remote/branch/commit/provenance resolution |
+| `ci_purple_sbom.py` | CycloneDX file reading, local pre-flight validation, request-body construction |
+| `ci_purple_transport.py` | HTTP transport primitives: config, error mapping, `Retry-After`-aware bounded backoff, `request_with_retry`, guarded JSON decoding. Auth- and endpoint-agnostic |
+| `ci_purple_client.py` | CI-PURPLE contract: token exchange, ingest submit, status/result/retry, and `wait_for_terminal`'s polling + JOB-level retry. Re-exports the transport surface so callers keep one import |
+| `github-actions-ci-purple-ingest.yml.example` | Worked GitHub Actions workflow |
+| `jenkins_ci_purple_ingest_pipeline.groovy` | Worked Jenkins pipeline |
+| `tests/` | Contract tests against frozen server fixtures (mocked HTTP, no live Phoenix needed) |
 
-## Step 1 - generate the CycloneDX SBOM
-
-Whether you need `--scanners vuln` depends on the import method you are heading for.
-
-For `--method vulnerability` it is **required**. Without it Trivy emits an inventory-only SBOM
-whose `vulnerabilities` array is empty, the import still succeeds, and Phoenix receives the
-asset and its `installedSoftware` but **zero findings**. This is the single most common cause
-of an "import worked but there are no vulnerabilities" report.
-
-For `--method sbom` an inventory-only SBOM is exactly what is wanted: Phoenix runs dep-scan
-over the uploaded file and derives the vulnerabilities itself, so scanning here would only
-produce a result the upload discards. The examples below include the flag because they feed
-the vulnerability method; drop it for the sbom method.
-
-### Container image
+## Quick start
 
 ```bash
-# Trivy installed locally
-trivy image \
-  --scanners vuln \
-  --format cyclonedx \
-  --output sbom.cdx.json \
-  myregistry.io/payments-api:1.4.2
+pip install -r requirements.txt
 
-# Trivy via Docker (no local install; needs the Docker socket to read the image)
-docker run --rm \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$PWD:/workspace" \
-  aquasec/trivy:latest image \
-    --scanners vuln \
-    --format cyclonedx \
-    --output /workspace/sbom.cdx.json \
-    myregistry.io/payments-api:1.4.2
-```
-
-For an image, set `--file-path` to something that identifies the build source, for example
-`Dockerfile`, so the asset key reads `acme/payments/Dockerfile:main`.
-
-### Repository build files (SCA)
-
-Scans dependency manifests and lockfiles in the working tree - `package-lock.json`,
-`yarn.lock`, `requirements.txt`, `poetry.lock`, `go.sum`, `pom.xml`, `Gemfile.lock`, and so on.
-
-```bash
-# Trivy installed locally
-trivy fs \
-  --scanners vuln \
-  --format cyclonedx \
-  --output sbom.cdx.json \
-  .
-
-# Trivy via Docker (no Docker socket needed - it only reads files)
-docker run --rm \
-  -v "$PWD:/workspace" \
-  aquasec/trivy:latest fs \
-    --scanners vuln \
-    --format cyclonedx \
-    --output /workspace/sbom.cdx.json \
-    /workspace
-```
-
-Any CycloneDX JSON producer works here, not just Trivy - Grype (`grype -o cyclonedx-json`),
-Syft plus a vulnerability source, `cdxgen`, or a vendor SBOM. The importer only requires
-`bomFormat: CycloneDX`; components become `installedSoftware` and `vulnerabilities` become findings.
-An SBOM with no `vulnerabilities` array imports cleanly as an inventory-only asset.
-
-### Choosing a scanner
-
-| Scanner | Produces | Build files | Container images | Use with |
-| --- | --- | --- | --- | --- |
-| `cdxgen` | inventory SBOM, no vulnerabilities | yes | **no** (see below) | `--method sbom` |
-| `trivy` | CycloneDX, with or without vulnerabilities | yes | yes | either method |
-| `dep-scan` | CycloneDX VDR (`sbom-<type>.vdr.json`) | yes | yes | `--method vulnerability` |
-
-**cdxgen cannot scan a container image from inside its own container.** Invoked as
-`cdxgen -t docker <image>` with the Docker socket mounted, it fails with `Unable to pull <image>`
-even when the image is present locally, because it exports the image through its own OCI path
-rather than the mounted socket. Container inventory SBOMs therefore come from Trivy with the
-vulnerability scanners left off:
-
-```bash
-trivy image --format cyclonedx --output sbom.cdx.json myregistry.io/payments-api:1.4.2
-```
-
-That produces a plain CycloneDX inventory (measured: 97 components, 0 vulnerabilities on
-`debian:11-slim`) - exactly what `--method sbom` wants. Both pipelines pick Trivy automatically
-for image-mode SBOMs and reject an explicit `cdxgen` + image combination with that explanation.
-
-**OWASP dep-scan** resolves transitive dependencies through cdxgen, so it typically reports more
-components than Trivy on the same repository. Its VDR imports with no special handling - the
-`affects[].ref` values match the component `bom-ref` values, so finding locations resolve cleanly.
-
-```bash
-# build files
-docker run --rm -v depscan-vdb:/vdb -e VDB_HOME=/vdb -u root \
-  -v "$PWD:/app:ro" -v "$PWD/reports:/reports" \
-  ghcr.io/owasp-dep-scan/dep-scan:latest \
-  depscan --no-banner --vdb-scope app --src /app --reports-dir /reports
-
-# container image (add the Docker socket and the OS vulnerability data)
-docker run --rm -v depscan-vdb:/vdb -e VDB_HOME=/vdb -u root \
-  -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/reports:/reports" \
-  ghcr.io/owasp-dep-scan/dep-scan:latest \
-  depscan --no-banner --vdb-scope app+os --src myregistry.io/payments-api:1.4.2 --reports-dir /reports
-```
-
-Three things to know about dep-scan:
-
-- The image has **no default entrypoint** - `depscan` must be given explicitly.
-- It downloads a **~4GB vulnerability database**. Mount a named Docker volume and point
-  `VDB_HOME` at it, or every build pays that cost again: measured cold 187s, warm **9s**.
-- The VDR filename is `sbom-<project_type>.vdr.json`, defaulting to `sbom-universal.vdr.json`.
-  Locate it by glob rather than by a hardcoded name.
-
-**cdxgen** ships inside the dep-scan image and produces the inventory SBOM for `--method sbom`.
-It refuses to run as root, so run it as the image's default user:
-
-```bash
-docker run --rm -v "$PWD:/app:ro" -v "$PWD/reports:/reports" \
-  --entrypoint cdxgen ghcr.io/owasp-dep-scan/dep-scan:latest \
-  -t universal -o /reports/sbom.cdx.json /app
-```
-
-## Import methods
-
-Phoenix accepts CI results two different ways, and this utility supports both. Pick with
-`--method` (or `method` in `config.ini`).
-
-| | `--method sbom` | `--method vulnerability` |
-| --- | --- | --- |
-| Endpoint | `POST /v1/import/assets/file/translate` | `POST /v1/import/assets` |
-| Body | multipart: the SBOM file itself | JSON: parsed findings |
-| scanType | `PhxSbomSca:<projectType>` | n/a |
-| Who finds the vulnerabilities | **Phoenix**, by running dep-scan over the uploaded SBOM | **the pipeline**, before upload |
-| SBOM must contain vulnerabilities | No - an inventory SBOM is enough | Yes |
-| Result | asynchronous; poll with `--wait` | synchronous |
-| Jenkins/Actions `auto` picks it for | build files | container images |
-| CLI default | | **yes** - the importer defaults to `vulnerability` when neither `--method` nor a config file sets one |
-
-Rule of thumb: if the pipeline already ran a vulnerability scanner, send the findings
-(`vulnerability`). If it only produced an inventory SBOM, send the SBOM and let Phoenix analyse
-it (`sbom`).
-
-### sbom method
-
-```bash
-python3 sbom_sca_single_repo_to_phoenix.py \
+python3 ci_purple_sbom_to_phoenix.py \
   --sbom-file sbom.cdx.json \
-  --repo acme/payments --file-path package-lock.json --branch main \
-  --method sbom --project-type universal \
-  --import-type merge --wait
+  --asset-kind REPO \
+  --build-file-path package-lock.json \
+  --wait
 ```
 
-`--project-type` becomes the `PhxSbomSca:` suffix that tells Phoenix's dep-scan service what kind
-of project it is: `universal` (default), `js`, `python`, `java`, `go`, and so on.
+Repository/branch/commit and CI provenance are auto-detected - see "CI-provider auto-detection"
+below. The Phoenix API key must be created with **exactly** `scopes: ["ci:ingest"]`; any other
+scope set (default/no scope, a combination, etc.) is rejected by the token-mint endpoint with
+`403 ci_ingest_scope_required`. **Set it via `PHOENIX_API_KEY`, not `--api-key`** - see "Scoped API
+key" below for why.
 
-The upload returns immediately with a request id. `--wait` polls
-`GET /v1/import/assets/file/translate/request/{id}` until the status reaches `IMPORTED`, and
-fails the build on `ERROR`; without it the script returns as soon as the file is accepted.
-`--no-auto-import` stages the translation for review instead of importing it.
+## CI-provider auto-detection
 
-**Known server-side limitation: concurrent uploads collide.** Measured against a live tenant,
-`PhxSbomSca` translate requests submitted close together do not all complete. Three *identical*
-SBOMs uploaded 40ms apart produced one `IMPORTED` after four minutes and two that never did. The
-same pattern appeared in three separate unplanned occurrences: whenever two uploads landed within
-~20 seconds of each other, the first imported in four to five minutes and the second did not.
-Requests submitted in isolation imported reliably every time.
+Unlike `sbom-single-repo` (which needs an explicit `--from-jenkins-env`/`--from-github-env`/
+`--from-bitbucket-env` flag), this client detects the running CI system automatically from
+provider-published environment markers:
 
-A collided request is lost, not merely slow. Every one observed sat in `TRANSLATING` for around an
-hour and then terminated in `ERROR: ResourceAccessException` - none ever recovered. That is
-consistent with the backend's own timeout: `DepscanServiceApiClient` calls the dep-scan service
-with `setReadTimeout(Duration.ofMinutes(60))`, and `ResourceAccessException` is what Spring's
-`RestTemplate` raises when a read timeout fires. The likely cause is limited concurrency on that
-service, so simultaneous uploads queue behind one another until the caller gives up.
-
-This matters because a CI fleet produces exactly that pattern - several repositories building at
-once, each uploading an SBOM. Until it is fixed server-side:
-
-- **Serialise sbom-method uploads** where you can. In Jenkins, `disableConcurrentBuilds()` covers
-  one job; across jobs you need a lock or a throttle.
-- **Prefer the vulnerability method for anything fan-out.** It is a single synchronous POST with
-  no server-side queue, and Trivy covers both build files and container images.
-- **Do not treat a stuck `TRANSLATING` as your bug.** Check whether another upload from the same
-  organization was in flight at the same moment.
-
-**How long a successful import takes.** An uncontended request - build file or container, 5 or 98
-components - imports in roughly four to five minutes. Anything much beyond that has usually
-collided with another upload rather than simply being slow.
-
-Two consequences for `--wait`, which is why it is opt-in in both CI pipelines:
-
-- A poll timeout only bounds how long the build waits; the request keeps translating server-side
-  and may still import, so the error message prints its URL. Do not read a timeout as success
-  either - if the upload collided with another, it will end in `ERROR` about an hour later.
-- A terminal `ERROR` is real and does fail the build, with whatever detail Phoenix returned.
-
-### vulnerability method
-
-```bash
-python3 sbom_sca_single_repo_to_phoenix.py \
-  --sbom-file sbom.cdx.json \
-  --repo acme/payments --file-path Dockerfile --branch main \
-  --method vulnerability --import-type merge
-```
-
-This is the default, and the behaviour described in the rest of this document. If the SBOM has
-components but no vulnerabilities, the script warns rather than silently importing zero findings.
-
-## Step 2 - import the SBOM into Phoenix
-
-```bash
-# from repo root
-cd Utils/SBOM-SCA-CONTAINER-PIPELINE/sbom-single-repo
-python3 -m pip install -r requirements.txt
-
-# import one SBOM (credentials resolved as described below)
-python3 sbom_sca_single_repo_to_phoenix.py \
-  --sbom-file sbom.cdx.json \
-  --repo acme/payments \
-  --file-path package-lock.json \
-  --branch main \
-  --import-type merge
-
-# preview the payload only - no credentials needed, no API call made
-python3 sbom_sca_single_repo_to_phoenix.py \
-  --sbom-file sbom.cdx.json \
-  --repo acme/payments \
-  --file-path package-lock.json \
-  --branch main \
-  --dry-run \
-  --payload-out payload-preview.json
-```
-
-On success the script prints the assets/findings count, then the API response:
-
-```text
-Prepared payload: assets=1, findings=83
-Import submitted successfully.
-{
-  "status": "accepted"
-}
-```
-
-### Import types
-
-| `--import-type` | Behaviour |
-| --- | --- |
-| `new` | Create a new assessment run |
-| `merge` | Merge into the existing asset, keeping findings not present in this scan (default) |
-| `delta` | Merge and close findings absent from this scan |
-
-## Credentials
-
-The importer needs a Phoenix **client ID** and **client secret**. It resolves them from three
-places, highest precedence first:
-
-| Precedence | Source | Use it for |
+| Provider | Detected via | `ciSystem` sent |
 | --- | --- | --- |
-| 1 | CLI flags `--client-id` / `--client-secret` | Ad-hoc runs and debugging |
-| 2 | Environment variables `PHOENIX_CLIENT_ID` / `PHOENIX_CLIENT_SECRET` | **CI pipelines (recommended)** |
-| 3 | `config.ini`, section `[phoenix]` | Local workstation use |
+| GitHub Actions | `GITHUB_ACTIONS=true` | `GITHUB_ACTIONS` |
+| Azure Pipelines | `TF_BUILD=True` (Microsoft's own documented marker) | `AZURE_DEVOPS` |
+| Jenkins | `JENKINS_URL` (if the admin configured it), else `BUILD_TAG` (`jenkins-<job>-<build>`, set unconditionally by Jenkins core) | `JENKINS` |
+| Bitbucket Pipelines | `BITBUCKET_BUILD_NUMBER` | *(never sent - see below)* |
 
-`PHOENIX_API_BASE_URL` (env) or `api_base_url` (config) sets the tenant URL and defaults to
-`https://api.securityphoenix.cloud`. `--api-base-url` overrides both.
+`gitRemoteUrl` and `commitSha` prefer asking `git` directly (`git remote get-url origin` /
+`git rev-parse HEAD`) over any provider environment variable - the checkout itself is the most
+authoritative source and is identical across providers. `branch` does the OPPOSITE: it prefers the
+provider's own environment variable over `git`, because every supported provider checks out a
+**detached HEAD** for the commit under test, so `git branch --show-current` returns empty in
+exactly the environment this needs to work in.
 
-### Option A - environment variables (recommended for CI)
+Override any of it explicitly with `--ci-provider`, `--git-remote-url`, `--branch`, `--commit-sha`,
+`--run-url`, `--runner`, `--pipeline-id` - useful for a bare-metal/self-hosted runner with no
+recognized marker, or for testing.
 
-```bash
-export PHOENIX_CLIENT_ID="your-client-id"
-export PHOENIX_CLIENT_SECRET="your-client-secret"
-export PHOENIX_API_BASE_URL="https://api.securityphoenix.cloud"
+### Azure DevOps notes (judgment calls - see task-8-report.md Concerns)
 
-python3 sbom_sca_single_repo_to_phoenix.py --sbom-file sbom.cdx.json ...
-```
+- `pipelineId` uses `Build.BuildId` (`BUILD_BUILDID`) - a numeric id unique across the whole Azure
+  DevOps organization, matching design Sec 3.1's "provider run/build id" description most directly.
+- `branch` prefers `System.PullRequest.SourceBranch` (set only on PR-triggered builds) over
+  `Build.SourceBranch`, mirroring the same PR-source-branch preference GitHub Actions needs
+  (`GITHUB_HEAD_REF` over `GITHUB_REF_NAME`).
+- `branch` deliberately does **not** use `Build.SourceBranchName` even though Azure exposes it as a
+  ready-made short name: for a branch containing a slash (e.g. `feature/foo`), Azure derives that
+  variable by taking only the LAST path segment (`foo`), silently discarding the `feature/` prefix.
+  This client strips `refs/heads/` from `Build.SourceBranch` itself instead, which keeps the full
+  branch name intact - see `test_resolve_branch_azure_strips_refs_heads_not_last_segment` for the
+  regression guard.
+- These were reasoned from Azure DevOps's own documented predefined variables, not verified against
+  a live Azure Pipelines run in this task - flagged as a Concern.
 
-### Option B - config.ini (local use)
+### Bitbucket: not supported (exit 2)
 
-Copy the template and fill it in. **`config.ini` holds a live secret - never commit it.**
-
-```bash
-cp config.ini.template config.ini
-chmod 600 config.ini
-```
-
-```ini
-[phoenix]
-client_id = your-client-id
-client_secret = your-client-secret
-api_base_url = https://api.securityphoenix.cloud
-import_type = merge
-assessment_name = single-repo-sca-sbom
-
-[options]
-verify_tls = true
-timeout_seconds = 60
-```
-
-Point at it with `--config config.ini` (it is also the default when present in the working directory).
-
-### Option C - Jenkins credentials store
-
-Do **not** put secrets in the pipeline script. Add two **Secret text** credentials in Jenkins
-(Manage Jenkins -> Credentials), then bind them in the pipeline:
-
-| Jenkins credential ID | Value |
-| --- | --- |
-| `phoenix-client-id` | Phoenix client ID |
-| `phoenix-client-secret` | Phoenix client secret |
-
-`jenkins_sbom_single_repo_pipeline.groovy` already binds them, which is why no credential
-values appear anywhere in the script:
-
-```groovy
-environment {
-    PHOENIX_CLIENT_ID = credentials('phoenix-client-id')
-    PHOENIX_CLIENT_SECRET = credentials('phoenix-client-secret')
-}
-```
-
-Jenkins masks these in console output. Use the same IDs for the SonarQube integration in
-`Utils/Jenkins Integration/` so one credential pair covers both pipelines.
-
-### Verifying credentials
-
-`--dry-run` deliberately does **not** need credentials, so it cannot confirm them. To check
-auth and connectivity, run a real import of the small sample SBOM:
+Design D18 / the server's own `422 unsupported_ci_system` mean Bitbucket Pipelines is explicitly
+out of scope for CI-PURPLE ingest in v1. If this client detects Bitbucket, it exits **`2`**
+immediately - before reading the SBOM or requiring any credential - with a message pointing at the
+sibling `sbom-single-repo/` tool, which DOES support Bitbucket:
 
 ```bash
-python3 sbom_sca_single_repo_to_phoenix.py \
-  --sbom-file sbom.cdx.json \
-  --repo test/connectivity --file-path package-lock.json --branch main \
-  --import-type new --assessment-name phoenix-connectivity-check
+python3 ../sbom-single-repo/sbom_sca_single_repo_to_phoenix.py \
+    --sbom-file <path> --file-path <manifest> --from-bitbucket-env --import-type merge
 ```
 
-Bad credentials fail fast and non-zero:
+## Scoped API key
 
-```
-Error: Token request failed: HTTP 401 - {"error":"bad credentials"}
-```
+Create a Phoenix API key with **exactly** `scopes: ["ci:ingest"]` (no other scope, no
+combination - a general-purpose key is rejected here).
 
-### Upload flow
+**Supply it via the `PHOENIX_API_KEY` environment variable - not the `--api-key` flag.** A value
+passed on the command line is visible to any other process on the runner via `ps` and lands in
+shell history; both shipped pipeline templates use the environment variable exclusively.
+`--api-key` exists only for local ad-hoc debugging (e.g. `--dry-run` against a scratch SBOM on your
+own workstation) and should never appear in a committed pipeline definition.
 
-The script performs a two-call sequence against Phoenix API v1.25:
+Store it as a CI secret:
 
-1. `GET {api_base_url}/v1/auth/access_token` with HTTP Basic auth (`client_id:client_secret`),
-   returning a bearer token
-2. `POST {api_base_url}/v1/import/assets` with `Authorization: Bearer <token>` and
-   `Content-Type: application/json`, carrying the generated payload
+- GitHub Actions: repository secret `PHOENIX_API_KEY` (see the example workflow, which passes it
+  through as the `PHOENIX_API_KEY` environment variable).
+- Jenkins: a **Secret text** credential (see `jenkins_ci_purple_ingest_pipeline.groovy`'s
+  `environment { PHOENIX_API_KEY = credentials('phoenix-ci-ingest-api-key') }` binding - Jenkins
+  masks this in console output automatically).
+- Azure DevOps: a secret pipeline variable, or a variable group backed by a secrets store.
 
-Non-2xx responses at either step raise and exit non-zero, so a failed upload fails the build
-rather than passing silently.
+The client mints a short-lived (**1-hour TTL**) `phx_at_*` CI-ingest token from this key per run,
+via `POST /api/v1/external/auth/ci-ingest-token`, and re-mints automatically (~60s before
+expiry, or immediately on an unexpected `401`) for a run that takes longer than an hour. The
+minted token is held in memory only for the life of the process - **never** written to disk or a CI
+cache, and never reused across separate pipeline invocations.
 
-TLS verification is on by default. For an internal endpoint with a private CA, install that CA
-in the runner's trust store (or point `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` at it) - that
-keeps verification working. `--no-verify-tls` is **not** the fix for that: it disables
-certificate verification entirely, so anything able to intercept the connection can present its
-own certificate and read the credentials and SBOM. Treat it as a short-lived diagnostic for
-confirming a certificate problem, never as a standing setting in a pipeline.
+## Two asset kinds
 
-The importer also refuses an `http://` API URL outright, because the token call sends
-client_id and client_secret as HTTP Basic. `--allow-insecure-http` overrides that for a local
-mock or lab endpoint and warns each time.
-
-## Options reference
-
-Every option the importer accepts, what sets it, and when it matters.
-
-### Required
-
-| Option | Notes |
-| --- | --- |
-| `--sbom-file PATH` | The CycloneDX JSON to import. The only always-required flag. |
-| `--file-path PATH` | Manifest path recorded in the asset key, e.g. `package-lock.json`. For image scans use something stable like `Dockerfile`. |
-| `--repo OWNER/NAME` | Repository identifier. Supplied directly, or derived by one of the `--from-*-env` flags. |
-| `--branch NAME` | Branch name. Supplied directly, or derived by one of the `--from-*-env` flags. |
-
-`--repo` and `--branch` are only required in the sense that they must end up populated; a
-`--from-*-env` flag can fill either. Missing values fail before any network call, and the error
-names which ones and which CI mode might supply them.
-
-### Asset identity and CI context
-
-| Option | Default | Purpose |
+| `--asset-kind` | Required flags | Notes |
 | --- | --- | --- |
-| `--from-jenkins-env` | off | Fill repo/branch/commit/build number/build URL from `GIT_URL`, `BRANCH_NAME` or `GIT_BRANCH`, `GIT_COMMIT`, `BUILD_NUMBER`, `BUILD_URL`. Requires a checkout step to have run. |
-| `--from-github-env` | off | Same from `GITHUB_REPOSITORY`, `GITHUB_HEAD_REF`/`GITHUB_REF_NAME`, `GITHUB_SHA`, `GITHUB_RUN_NUMBER`, `GITHUB_RUN_ID`. Prefers the head ref, because `GITHUB_REF_NAME` is `<pr>/merge` on pull_request events. |
-| `--from-bitbucket-env` | off | Same from `BITBUCKET_*`. |
-| `--origin VALUE` | `cyclonedx-sca` | Recorded as the asset's origin. |
+| `REPO` (default) | `--build-file-path` | A dependency-manifest SBOM (build.gradle.kts, package-lock.json, ...). |
+| `CONTAINER_IMAGE` | `--registry --image --tag --digest --dockerfile-path` | A container-image SBOM. `--digest` must be an exact `sha256:<64 hex>` digest. `provenance.builtFromRepo`/`builtFromCommit` are DERIVED from `gitRemoteUrl`/`commitSha` automatically (the server requires them to be exactly equal) - you never pass them separately. `--from-line`/`--base-image-ref` are optional. |
 
-The three `--from-*-env` flags are mutually exclusive and fail immediately if combined. Anything
-you pass explicitly wins over the environment, so you can let CI supply the branch while pinning
-the repository name by hand.
+Conditional fields from the other asset kind are rejected client-side with a clear message before
+any network call (matching the server's own "rejected, not ignored" contract).
 
-### Import method
+## Two retry concepts (do not conflate them)
 
-| Option | Default | Applies to | Purpose |
-| --- | --- | --- | --- |
-| `--method sbom\|vulnerability` | `vulnerability` | both | Which Phoenix API to use. See [Import methods](#import-methods). |
-| `--project-type NAME` | `universal` | sbom | Becomes the `PhxSbomSca:<projectType>` scan type: `universal`, `js`, `python`, `java`, `go`, … |
-| `--scan-target VALUE` | the `--file-path` value | sbom | What the import records as the thing scanned. Useful for an image reference. |
-| `--no-auto-import` | off | sbom | Stage the translation for review instead of importing it. The request settles at `READY_FOR_IMPORT`. |
-| `--wait` | off | sbom | Poll until the request finishes. With `--no-auto-import`, `READY_FOR_IMPORT` counts as finished. |
-| `--import-type new\|merge\|delta` | `merge` | both | `merge` keeps findings this scan did not see; `delta` closes them; `new` replaces. |
-| `--assessment-name NAME` | `single-repo-sca-sbom` | both | Assessment the import is recorded under. |
+- **Transport-level retry** (`ci_purple_client.request_with_retry`): a network error, `429`
+  (honouring the server's `Retry-After` header EXACTLY, never a computed backoff for that
+  response), or `503`, on ANY call (token exchange, ingest submit, status poll, result fetch).
+  Bounded exponential backoff with jitter, `--max-retry-attempts` (default 5). Applied uniformly -
+  every authenticated call routes through this one function in `ci_purple_transport.py`. Each poll
+  additionally runs with its transport budget shrunk to the time left on `--wait-timeout-seconds`,
+  so a degraded status poll cannot overshoot the deadline the flag advertises.
+- **Job-level retry** (`POST /ingest/{jobId}/retry`): re-runs a server-classified-retryable
+  `FAILED` job. This is orchestrated automatically inside `--wait`'s polling loop
+  (`ci_purple_client.wait_for_terminal`) up to **4 job-level retry calls** (**5 total attempts**
+  including the initial submit) - one call short of the server's own cumulative ceiling
+  (`SbomJobQueueRepository.MAX_ATTEMPTS = 5`), so this client never issues the retry call the
+  server is guaranteed to reject with `409 retry_attempts_exhausted`. Without `--wait`, no
+  job-level retry happens (the process has already exited after the `202`).
 
-`--wait` and `--no-auto-import` describe the asynchronous translate request, so passing either
-with `--method vulnerability` is rejected rather than silently ignored.
+## `--wait` and exit codes
 
-### Artefact identity (sbom method)
+Without `--wait`, the tool submits and exits `0` immediately after a `202` - for pipelines that
+want fire-and-forget ingest with a separate later check (`GET /ingest/{jobId}`).
 
-Declare what the SBOM describes instead of leaving Phoenix to infer it from the BOM. All
-optional; omitting `--artefact-type` reproduces the previous behaviour exactly.
+With `--wait`, it polls (`--poll-interval-seconds`, default 10) until a terminal state
+(`SUCCEEDED`/`DEGRADED`/`FAILED`) or `--wait-timeout-seconds` (default 1800) elapses, auto-retrying
+a retryable `FAILED` job as above, then fetches `GET /ingest/{jobId}/result`.
 
-| Option | Artefact type | Purpose |
-| --- | --- | --- |
-| `--artefact-type BUILD_FILE\|CONTAINER` | both | Turns the rest on. Omit for inferred identity |
-| `--build-file PATH` | BUILD_FILE | Relative build file path, e.g. `services/api/pom.xml`. Defaults to `--file-path`. Rejected if absolute or containing `..` |
-| `--container-name NAME` | CONTAINER | Image name; required for CONTAINER |
-| `--container-version TAG` | CONTAINER | Image tag |
-| `--container-digest sha256:…` | CONTAINER | Must be `sha256:` plus 64 hex characters |
-| `--registry HOST` | CONTAINER | Registry host |
-
-For `CONTAINER`, anything not passed is read from the BOM's `metadata.component` - a Trivy image
-SBOM already carries name, tag, digest and registry - so a pipeline usually needs only
-`--artefact-type CONTAINER`. Explicit flags always win.
-
-Every option in this section belongs to `--method sbom`; passing any of them with
-`--method vulnerability` is rejected rather than silently ignored, because that method posts
-findings parsed from the BOM and sends no artefact identity at all. `--dry-run` validates them
-and prints the resolved identity without calling the API.
-
-These parameters take effect only against a Phoenix organization with in-house translation
-enabled; elsewhere Phoenix validates and discards them, which is why they are safe to send
-unconditionally.
-
-### Connection and credentials
-
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `--api-base-url URL` | `https://api.securityphoenix.cloud` | Phoenix tenant. |
-| `--client-id ID` / `--client-secret SECRET` | unset | Credentials. Prefer environment variables in CI; a value on the command line is visible in the process list and in build logs. |
-| `--config PATH` | `config.ini` | INI file to read. Missing file is not an error if the settings come from elsewhere. |
-| `--verify-tls` / `--no-verify-tls` | verification on | `--no-verify-tls` disables certificate verification entirely. For a private CA, install it in the runner's trust store instead. |
-| `--allow-insecure-http` | off | Permit an `http://` base URL. Credentials are sent as HTTP Basic, so this exposes them; intended for a local mock. |
-
-### Diagnostics
-
-| Option | Purpose |
+| Exit code | Meaning |
 | --- | --- |
-| `--dry-run` | Build the payload and stop. No credentials needed, no request made. The fastest way to check asset identity and finding counts. |
-| `--payload-out PATH` | Write the generated JSON payload to a file. Combines with `--dry-run`. |
+| `0` | Ingest submitted (no `--wait`), or `--wait` completed with a terminal verdict other than `BLOCK`. |
+| `1` | Any handled runtime failure: bad configuration, unreadable/non-CycloneDX/locally-invalid SBOM, unresolvable CI context, auth failure, non-2xx response, terminal `FAILED` (not retryable or retries exhausted), or a `--wait` timeout. Reason printed to stderr. |
+| `2` | Invalid command line (argparse's own default), **or** the detected CI provider is Bitbucket (unsupported in v1). Both reuse `2` deliberately - matching `sbom-single-repo`'s own precedent of giving `2` a specific, non-generic meaning - and both mean "nothing was submitted." |
+| `3` | `--wait` completed and the terminal result's `verdict` is `BLOCK` - use this to gate the build specifically, distinct from a client-side error (`1`). |
 
-### Where each setting comes from
+## Proxy / custom CA
 
-Precedence differs by setting, which matters when a config file and a pipeline disagree:
+Standard `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` environment variables are honoured automatically
+(`requests`' own `trust_env` default, left untouched - see `ci_purple_client.build_session`'s
+docstring). For a self-hosted Phoenix deployment or a corporate TLS-inspecting proxy with a private
+CA, pass `--ca-bundle /path/to/ca.pem` (or set `PHOENIX_CA_BUNDLE`) - this maps directly onto
+`requests`' own `verify=<path>` contract and takes precedence over `REQUESTS_CA_BUNDLE`.
+`--no-verify-tls` disables certificate verification entirely; treat it as a short-lived diagnostic
+only, per the same reasoning `sbom-single-repo/README.md`'s "Upload flow" section gives.
 
-| Setting | Order |
-| --- | --- |
-| `client_id`, `client_secret`, `api_base_url` | CLI flag → environment variable → `config.ini` → built-in default |
-| `method`, `project_type`, `import_type`, `assessment_name` | CLI flag → `config.ini` → built-in default |
-| `verify_tls` | `config.ini` → `--verify-tls` → `--no-verify-tls` (last flag wins) |
-| `allow_insecure_http`, `wait_for_completion` | CLI flag, otherwise `config.ini` |
-| `timeout_seconds`, `poll_interval_seconds`, `poll_timeout_seconds` | `config.ini` only |
+## Secret-safe logs
 
-Only three settings read the environment — `PHOENIX_CLIENT_ID`, `PHOENIX_CLIENT_SECRET` and
-`PHOENIX_API_BASE_URL`. There is deliberately no `PHOENIX_METHOD` or `PHOENIX_IMPORT_TYPE`: those
-change what gets written into Phoenix, so they are set explicitly per run rather than inherited
-from an exported shell variable.
+Per `.claude/rules/env-secret-handling.md` (agent-code-analyzer-r2 repo; the doctrine applies here
+regardless of which repository the rule file lives in): the raw API key and the minted `phx_at_*`
+token are **never** logged, printed, or included in any error message, exception, or stack trace -
+not even a truncated prefix. Both values are used ONLY to build the `Authorization` header passed
+directly to `requests`; every error path in `ci_purple_client.py` (`CiPurpleApiError`) builds its
+message from the HTTP status code and the server's own JSON error body only, never from request
+headers or from `str(exc)` on a caught `requests` exception (which can otherwise carry a
+`PreparedRequest`, including its headers, in its string form). `tests/test_cli.py`'s
+`test_cli_never_prints_api_key_or_token` exercises the most error-message-heavy path (submit, wait,
+terminal FAILED) end-to-end and asserts neither value appears on stdout or stderr.
 
-### config.ini
-
-```ini
-[phoenix]
-client_id =
-client_secret =
-api_base_url = https://api.securityphoenix.cloud
-import_type = merge                  ; new | merge | delta
-assessment_name = single-repo-sca-sbom
-method = vulnerability               ; vulnerability | sbom
-project_type = universal             ; sbom method: PhxSbomSca:<project_type>
-
-[options]
-verify_tls = true
-allow_insecure_http = false          ; permit http:// - exposes credentials
-timeout_seconds = 60                 ; per-request HTTP timeout
-wait_for_completion = false          ; sbom method: poll until the import settles
-poll_interval_seconds = 10
-poll_timeout_seconds = 1800          ; bounds the wait only; the request keeps running
-```
-
-Keep this file out of version control - it holds a credential pair. `config.ini.template` is the
-copy to commit.
-
-### GitHub Actions inputs
-
-| Input | Default | Notes |
-| --- | --- | --- |
-| `phoenix_method` | `auto` | `auto`, `sbom`, `vulnerability` |
-| `scan_mode` | `buildfile` | `buildfile`, `image` |
-| `scanner` | `auto` | `auto`, `cdxgen`, `trivy`, `depscan` |
-| `scan_path` | `.` | buildfile mode: path within the checkout |
-| `container_image` | *(blank)* | image mode: required, validated during resolution |
-| `project_type` | `universal` | cdxgen `-t` and the `PhxSbomSca:` suffix |
-| `file_path` | `package-lock.json` | manifest path in the asset key |
-| `import_type` | `merge` | `new`, `merge`, `delta` |
-| `wait_for_completion` | `false` | bounded by the job's 45-minute timeout |
-
-Secrets: `PHOENIX_CLIENT_ID` and `PHOENIX_CLIENT_SECRET`. The tenant URL comes from the
-`PHOENIX_API_BASE_URL` repository variable, falling back to production.
-
-### Choosing options
-
-| Goal | Options |
-| --- | --- |
-| Inventory a repository, let Phoenix analyse it | `--method sbom --project-type js` with a cdxgen or plain-Trivy SBOM |
-| Inventory a container image the same way | `--method sbom --project-type universal --scan-target <image>`, SBOM from `trivy image` with no `--scanners vuln` |
-| Scan locally and send findings | `--method vulnerability`, SBOM from `trivy … --scanners vuln` |
-| Close findings that are no longer present | add `--import-type delta` |
-| Block the build until the import lands | `--method sbom --wait` (expect minutes, and see the concurrency note above) |
-| Stage an import for review | `--method sbom --no-auto-import` (add `--wait` to confirm it reached `READY_FOR_IMPORT`) |
-| Check identity and counts without uploading | `--dry-run --payload-out payload.json` |
-
-### Request size limits
-
-The API sits behind an AWS API Gateway HTTP API, which rejects any request over **10MB** at the
-edge. That is not a Phoenix setting and cannot be raised from the application side; the caller
-gets a gateway error rather than a Phoenix one, so the cause is not obvious from the failure.
-
-The two methods approach that ceiling along different curves:
-
-| Method | What crosses the gateway | Grows with | Measured |
-| --- | --- | --- | --- |
-| `vulnerability` | the JSON findings payload | number of findings, ~2.4KB each | 113 findings = 0.26MB; 4,000 = 9.2MB |
-| `sbom` | the inventory SBOM file | size of the image or dependency tree, **not** finding count | container inventory SBOM = 197KB (~52x headroom); build-file SBOM = 4KB |
-
-Two things follow that are easy to get backwards:
-
-- For the `sbom` method, a minimal application on a large base image is closer to the limit than
-  a heavily vulnerable application on a slim one. Vulnerability count is irrelevant here, because
-  Phoenix does the analysis after upload - the enriched SBOM never crosses the gateway.
-- For the `vulnerability` method, the reverse holds: findings are the whole payload.
-
-The importer warns above 8MB, naming the finding count, and turns a rejection into a message
-that explains it rather than surfacing the gateway's response body. If you hit it, split the scan
-by manifest or sub-project; retrying unchanged will not help.
-
-### Exit codes
-
-| Code | Meaning |
-| --- | --- |
-| `0` | Import submitted, or accepted and - with `--wait` - settled successfully. |
-| `1` | Any handled failure: bad configuration, unreadable or non-CycloneDX SBOM, missing context, auth failure, non-2xx response, terminal `ERROR`, or a poll timeout. The reason is printed to stderr. |
-| `2` | Invalid command line, from argument parsing. |
-
-A poll timeout exits `1`, but the upload was already accepted - see the note under
-[sbom method](#sbom-method) before treating it as a failed import.
-
-## Security
-
-- Never hardcode credentials in source files or pipeline scripts
-- Use the Jenkins credentials store in CI, environment variables elsewhere
-- `config.ini` contains a live secret: keep it out of version control (`chmod 600`) and prefer
-  environment variables on shared machines
-- Auth flow follows Phoenix API v1.25 - see [Upload flow](#upload-flow) above
-- `--no-verify-tls` disables certificate verification; use it only for internal endpoints with a
-  private CA, never against a public tenant
-
-## GitHub Actions
-
-Copy `github-actions-sbom-phoenix.yml.example` to `.github/workflows/sbom-phoenix.yml` in the
-repository you want to scan, then add two repository secrets: `PHOENIX_CLIENT_ID` and
-`PHOENIX_CLIENT_SECRET`. Optionally set the `PHOENIX_API_BASE_URL` repository variable to point
-at a non-default tenant.
-
-The workflow exposes the same three choices as the Jenkins pipeline - `phoenix_method`,
-`scan_mode`, `scanner` - with the same `auto` resolution and the same rejection of contradictory
-combinations. It runs on `workflow_dispatch` and is callable from another workflow via
-`workflow_call`:
-
-```yaml
-jobs:
-  sbom:
-    uses: ./.github/workflows/sbom-phoenix.yml
-    with:
-      scan_mode: buildfile
-      file_path: package-lock.json
-    secrets:
-      PHOENIX_CLIENT_ID: ${{ secrets.PHOENIX_CLIENT_ID }}
-      PHOENIX_CLIENT_SECRET: ${{ secrets.PHOENIX_CLIENT_SECRET }}
-```
-
-Repository, branch, commit, run number, and a link back to the run are picked up automatically
-through `--from-github-env`:
-
-| GitHub variable | Lands in Phoenix as |
-| --- | --- |
-| `GITHUB_REPOSITORY` | `repository` tag + asset key |
-| `GITHUB_HEAD_REF`, else `GITHUB_REF_NAME` | `branch` tag + asset key |
-| `GITHUB_SHA` | `commit` tag |
-| `GITHUB_RUN_NUMBER` | `ciBuildNumber` tag |
-| `GITHUB_SERVER_URL` + repo + `GITHUB_RUN_ID` | `ciPipelineUrl` tag |
-
-`GITHUB_HEAD_REF` is preferred because on `pull_request` events `GITHUB_REF_NAME` is
-`<pr-number>/merge` rather than a branch name.
-
-The generated SBOM is uploaded as a build artifact (30-day retention) so a run can be audited
-after the fact.
-
-**Runner sizing.** `cdxgen` and `trivy` run fine on hosted runners. `depscan` needs a multi-GB
-vulnerability database that exceeds the GitHub Actions cache budget and would be re-fetched every
-run, so restrict `scanner=depscan` to self-hosted runners with a warmed `depscan-vdb` volume.
-
-## Warming the dep-scan database
-
-`depscan_vdb_warm.sh` populates the Docker volume that the pipelines mount at `/vdb`:
+## Contract tests
 
 ```bash
-./depscan_vdb_warm.sh          # app scope, for build-file scanning (~3.7GB)
-./depscan_vdb_warm.sh app+os   # app+os scope, for container scanning (~4.4GB)
+pip install -r requirements.txt pytest
+python3 -m pytest tests/ -v
 ```
 
-Run it once per build agent before enabling dep-scan. It retries the download more patiently than
-dep-scan itself does, and verifies the result by producing a VDR from a small fixture rather than
-just checking that the download finished.
+No live Phoenix instance is required - the HTTP layer is mocked with `unittest.mock`/pytest's
+`monkeypatch` (this repository has no `pytest.ini`/`tox.ini` establishing a different convention,
+and `requests`+`unittest.mock` needs no new dependency, so `pytest` was the reasonable default -
+also already the convention several other `Utils/` subprojects in this repository use, e.g.
+`Utils/client scripts/q2-translators/q2-yaml-translator/tests/`).
 
-Two things to know:
+`tests/fixtures/*.json` are copied **verbatim** from
+`code-analyzer-service/docs/openapi/ci-ingest-examples/` in the `agent-code-analyzer-r2` repository
+(design Sec 3.1's frozen Task 1 fixtures) - every request/response/status shape this client sends
+or parses is tested directly against them, not against a hand-rolled approximation.
 
-- The two scopes are **different artifacts** (`vdbxz-app` vs `vdbxz`). Switching an agent from
-  build-file to container scanning re-downloads the whole database rather than topping it up.
-- A failed download **leaves its partial data in the volume**, so the volume grows across retries
-  and scope switches. Reclaim it with `docker volume rm depscan-vdb` and re-warm. A volume that
-  has survived several failed attempts is much larger than one database: an app-scope volume here
-  measured 6.7GB after earlier failures, against a ~3.7GB database.
-- **The download itself is unreliable.** It is one large streamed transfer and any dropped
-  connection fails it outright. It took several attempts across sessions here before one
-  completed; that is why the script retries far more patiently than dep-scan does. Warm agents
-  out of band, never on the critical path of a build.
-
-The Jenkins pipeline checks the volume before scanning and warns when it looks cold, so a build
-does not silently begin a multi-GB download.
-
-## Bitbucket Pipeline mode
-
-Use Bitbucket environment variables for repository and branch:
-
-```bash
-python3 sbom_sca_single_repo_to_phoenix.py \
-  --sbom-file sbom.cdx.json \
-  --file-path package-lock.json \
-  --from-bitbucket-env \
-  --import-type merge
-```
-
-The script reads:
-
-- `BITBUCKET_REPO_FULL_NAME` -> `repository`
-- `BITBUCKET_BRANCH` -> `branch`
-- `BITBUCKET_COMMIT` -> extra tag `commit`
-- `BITBUCKET_BUILD_NUMBER` -> extra tag `ciBuildNumber`
-- `BITBUCKET_WORKSPACE` + `BITBUCKET_REPO_SLUG` + build number -> extra tag `ciPipelineUrl`
-
-## Jenkins Pipeline mode
-
-Use Jenkins environment variables for repository, branch, and CI provenance:
-
-```bash
-python3 sbom_sca_single_repo_to_phoenix.py \
-  --sbom-file sbom.cdx.json \
-  --file-path package-lock.json \
-  --from-jenkins-env \
-  --import-type merge
-```
-
-The script reads:
-
-- `GIT_URL` -> `repository` (falls back to `JOB_NAME`)
-- `BRANCH_NAME`, else `GIT_BRANCH` with the `origin/` prefix stripped -> `branch`
-- `GIT_COMMIT` -> extra tag `commit`
-- `BUILD_NUMBER` -> extra tag `ciBuildNumber`
-- `BUILD_URL` -> extra tag `ciPipelineUrl`
-
-`--repo` and `--branch` still take precedence when supplied, so you can override either value.
-`--from-jenkins-env` and `--from-bitbucket-env` are mutually exclusive.
-
-### Setting up the pipeline job
-
-1. Add the two Phoenix credentials as **Secret text** (see
-   [Option C - Jenkins credentials store](#option-c---jenkins-credentials-store)):
-   `phoenix-client-id` and `phoenix-client-secret`.
-2. Ensure the Jenkins agent can run `docker` and `python3`.
-3. Create a Pipeline job. For `buildfile` mode use **Pipeline script from SCM** pointing at your
-   repository so the workspace is checked out and Jenkins exports `GIT_URL` / `GIT_BRANCH` /
-   `GIT_COMMIT`. For `image` mode a plain **Pipeline script** job is enough.
-4. Paste `jenkins_sbom_single_repo_pipeline.groovy`, or point the job at it in SCM.
-5. Run with **Build with Parameters**.
-
-### Running Jenkins itself in a container
-
-If the Jenkins controller or agent is itself a container with the Docker socket mounted, one rule
-decides whether anything works: **the workspace must live at the same absolute path on the host as
-it does inside the container.**
-
-The pipeline hands workspace paths to `docker run -v` so the scanners can read the source. The
-Docker daemon resolves bind-mount sources on the *host*, not inside whichever container issued the
-command, so a path that exists only inside Jenkins mounts as an empty directory. The failure is
-quiet: the scanner writes its SBOM to a host directory nobody reads, and the build fails later with
-a confusing "No such file or directory" from a plain `cp`.
-
-Start such a controller with `JENKINS_HOME` bind-mounted onto itself:
-
-```bash
-docker run -d --name jenkins \
-    -u root \
-    -e JENKINS_HOME=/data/jenkins_home \
-    -v /data/jenkins_home:/data/jenkins_home \
-    -v /var/run/docker.sock:/var/run/docker.sock \
-    jenkins/jenkins:lts-jdk17
-```
-
-Scan reports are deliberately written under `$WORKSPACE/.phoenix-sbom-reports` rather than `/tmp`
-for the same reason - the workspace is the one directory that must already be mount-visible.
-
-### Testing it locally with Jenkins
-
-`local-jenkins/` builds a disposable Jenkins that exercises every mode end to end without touching
-a real repository. It builds a Jenkins image with the Docker CLI, python3 and the required plugins,
-builds a deliberately outdated `phoenix-fake-app:1.0` image to scan, assembles a seed git repository
-holding a fake npm project plus this importer, and pre-creates the parameterised job.
-
-```bash
-cp config.ini.template config.ini    # fill in client_id / client_secret / api_base_url
-./local-jenkins/run.sh               # build and start Jenkins; no scans, no uploads
-./local-jenkins/run.sh --trigger     # run the four modes and upload to the live tenant
-./local-jenkins/run.sh --stop        # tear it down
-```
-
-Scanning sits behind `--trigger` deliberately: it imports into a real Phoenix tenant and
-creates assets and findings there, which starting a test instance should not do as a side
-effect. `--trigger` runs all four modes even if one fails, then exits non-zero naming the
-failures, so it is usable as a check rather than something whose output has to be read.
-
-Credentials are read from the gitignored `config.ini` and passed to Jenkins as environment
-variables, so `local-jenkins/casc.yaml` holds no secrets. The instance is unsecured and bound to
-`127.0.0.1` only - it is a test harness, not a template for a real controller.
-
-Two quirks the script works around. A job's **first** build only registers the Jenkinsfile's
-`parameters` block, it cannot receive parameter values - `buildWithParameters` returns HTTP 400
-until one build has run, so `run.sh` fires an unparameterised bootstrap build first. And Jenkins
-answers `/api/json` with 200 part way through boot before falling back to 503, so the script waits
-on the JCasC-created job instead, several times over, and allows up to twelve minutes for it.
-
-Give the machine room. Jenkins, the scanner containers and the image under test all run on the same
-Docker daemon; on a host already running a large stack, boot takes minutes and Docker itself starts
-misbehaving - creating a container and then reporting "No such container" for its own id. `run.sh`
-checks the container's real state and retries rather than trusting exit codes, but a badly loaded
-daemon is still worth clearing first.
-
-The npm fixture is stored as `package.json.fixture` / `package-lock.json.fixture` and renamed
-into place by `run.sh`. It pins deliberately outdated packages so a scan finds something; under
-the real filenames Dependabot reads it as a manifest of this repository and raises upgrade PRs
-against a fixture whose whole purpose is to stay vulnerable.
-
-Jenkins keeps its home under `${TMPDIR:-/tmp}/phoenix-local-jenkins`, not in the repository.
-Override it with `PHOENIX_JENKINS_STATE=/some/path`, but keep it off a bind mount that macOS has
-to share into Docker through a git working tree: the same container scan measured about two
-minutes with the home in `/tmp` and roughly an hour with it inside the checkout. Delete that
-directory for a clean slate.
-
-### Pipeline parameters
-
-| Parameter | Default | Purpose |
-| --- | --- | --- |
-| `PHOENIX_METHOD` | `auto` | `sbom`, `vulnerability`, or `auto`. auto = `sbom` for build files, `vulnerability` for images |
-| `SCAN_MODE` | `buildfile` | `buildfile` scans workspace manifests, `image` scans a container image |
-| `SCANNER` | `auto` | `cdxgen`, `trivy`, `depscan`, or `auto`. auto = cdxgen for the sbom method, trivy for the vulnerability method |
-| `SCAN_PATH` | `.` | `buildfile` mode: path within the workspace to scan |
-| `CONTAINER_IMAGE` | `nginx:latest` | `image` mode: image reference to scan |
-| `PROJECT_TYPE` | `universal` | cdxgen `-t` value, and the `PhxSbomSca:<projectType>` suffix |
-| `REPO_NAME` | *(blank)* | Repository identifier; blank derives it from `GIT_URL` |
-| `FILE_PATH` | `package-lock.json` | Manifest path in the asset key; use `Dockerfile` for image mode |
-| `BRANCH` | *(blank)* | Branch; blank derives it from `BRANCH_NAME` / `GIT_BRANCH` |
-| `PHOENIX_IMPORT_TYPE` | `merge` | `new`, `merge`, or `delta` |
-| `WAIT_FOR_COMPLETION` | `false` | sbom method: hold the build until Phoenix finishes importing. Successful imports measured 4-5 minutes against a live tenant; a request still translating well past that has usually collided with another upload and will end in `ERROR` around the 60-minute mark, so waiting mostly costs executor time |
-| `PHOENIX_API_BASE_URL` | `https://api.securityphoenix.cloud` | Phoenix tenant URL |
-| `TRIVY_IMAGE` / `DEPSCAN_IMAGE` | upstream `latest` | Pin these for reproducible builds |
-| `DEPSCAN_VDB_VOLUME` | `depscan-vdb` | Docker volume caching dep-scan's ~4GB vulnerability DB |
-
-### Default behaviour
-
-| Scan mode | Method | Scanner | What happens |
-| --- | --- | --- | --- |
-| `buildfile` | `sbom` | cdxgen | Inventory SBOM uploaded; Phoenix runs dep-scan over it |
-| `image` | `vulnerability` | trivy | Image scanned for vulnerabilities; findings posted as JSON |
-
-Forcing the other combinations is supported too: `PHOENIX_METHOD=sbom` with `SCAN_MODE=image`
-uploads a container inventory SBOM (Trivy, vulnerability scanners off) for Phoenix to analyse,
-and `PHOENIX_METHOD=vulnerability` with `SCAN_MODE=buildfile` scans manifests locally with Trivy
-or dep-scan and posts the findings.
-
-The pipeline resolves `auto` in its first stage and rejects contradictory combinations early:
-`SCANNER=cdxgen` with `PHOENIX_METHOD=vulnerability` (nothing to import), `SCANNER=depscan` with
-`PHOENIX_METHOD=sbom` (Phoenix would repeat the analysis), and `SCANNER=cdxgen` with
-`SCAN_MODE=image` (cdxgen cannot export an image through a mounted Docker socket).
-
-The two scan modes are:
-
-- `buildfile` - runs `trivy fs` over the checked-out workspace to scan dependency manifests
-  (`package-lock.json`, `requirements.txt`, `go.sum`, ...). The job must check the repository
-  out into the workspace first. No Docker socket needed.
-- `image` - runs `trivy image` against `CONTAINER_IMAGE`. Mounts `/var/run/docker.sock`, so the
-  agent needs Docker socket access.
-
-Whether Trivy is given `--scanners vuln` depends on the method, not the scan mode. The
-vulnerability method requires it - without it Trivy emits an inventory-only SBOM with an empty
-`vulnerabilities` array, and the import creates the asset with `installedSoftware` but zero
-findings. The sbom method deliberately omits it, because Phoenix does that analysis server-side
-and scanning here would only produce a result the upload discards.
-
-The SBOM is written to `$WORKSPACE/sbom.cdx.json` and deleted in `post { always }` so it is not
-left on the agent.
-
-### Severity mapping
-
-CycloneDX carries one rating per advisory source (ghsa, nvd, redhat, ubuntu, ...) in no guaranteed
-order. The importer takes the **highest** rating across all sources - both the maximum CVSS score
-and the maximum severity label, then the higher of the two - rather than whichever rating happens
-to appear first.
-
-| Phoenix severity | Source rating |
+| Test file | Covers |
 | --- | --- |
-| `10.0` | CVSS >= 9.0, or label `critical` |
-| `8.0` | CVSS >= 7.0, or label `high` |
-| `5.0` | CVSS >= 4.0, or label `medium` / `moderate`, or no usable rating |
-| `2.0` | CVSS > 0.0, or label `low` |
-| `1.0` | CVSS 0.0, or label `info` / `none` |
+| `test_ci_context.py` | Provider auto-detection, git-vs-env precedence, provenance construction per provider, the Azure branch-name gotcha regression guard |
+| `test_ci_purple_sbom.py` | SBOM reading/format checks, local pre-flight validation against the frozen fixtures, request-body construction (byte-for-byte against `request-repo-valid.json`/`request-container-valid.json`), the gateway size budget |
+| `test_ci_purple_client_token.py` | Token mint/reuse/re-mint, the nanosecond-precision-instant parsing guard, config/TLS |
+| `test_ci_purple_client_transport.py` | Transport retry (backoff, `Retry-After` honoured exactly, non-retryable statuses not retried) |
+| `test_ci_purple_client_endpoints.py` | All six frozen status shapes, result/retry, `wait_for_terminal`'s auto-retry-then-succeed and retry-ceiling behaviour, the secret-safety guarantee (split from one `test_ci_purple_client.py`, now `conftest.py`-shared, to stay under `.agent/rules/02-modularity.md`'s 500-LOC file limit) |
+| `test_cli.py` | End-to-end exit codes (`0`/`1`/`2`/`3`), Bitbucket refusal, dry-run, missing-credential handling, and the full submit+wait+FAILED secret-safety check |
 
-Because a vendor sometimes publishes a qualitative label below the raw CVSS score it also
-publishes (Red Hat rating a 7.4 CVSS finding as `medium`, for example), a small number of findings
-land one level above the scanner's own headline severity. This is deliberate: the import errs
-toward the higher risk rating.
+## Known limits / Concerns
 
-### Multi-manifest repositories
-
-`trivy fs` over a repository root scans every manifest it finds, but this utility maps the whole
-SBOM onto **one** `BUILD` asset keyed by the single `--file-path` you pass. Findings keep their
-own per-package `location`, so the data is correct, but the asset identity names only one manifest.
-For per-manifest identity, run the importer once per manifest with `--import-type merge`.
-
-## Utils repository map (top-level folders and purpose)
-
-This utility is part of the broader `Utils/` ecosystem. Use this map as a quick index when you need related tooling.
-
-| Subfolder | Purpose |
-| --- | --- |
-| `Backstage Translator/` | Convert Backstage/ServiceNow catalog data into Phoenix-compatible YAML/config structures |
-| `Config_File_autogen/` | Auto-generate Phoenix configuration files from repository or metadata inputs |
-| `Gating/` | CI/CD policy gating (pass/fail) based on vulnerability and risk thresholds |
-| `Jenkins Integration/` | Jenkins pipeline integration templates/scripts for Phoenix workflows |
-| `Loading_Script_V2/` | Legacy scanner import (deprecated) |
-| `Loading_Script_V5/` | Multi-scanner import (canonical private copy: translators, service, lambda, synthetic tooling; sanitized for public repo) |
-| `Nucleus/` | Legacy Nucleus integration scripts |
-| `Nucleustophoenix/` | Migration tooling from Nucleus into Phoenix |
-| `Shodan conversion/` | Convert Shodan outputs into Phoenix-consumable formats |
-| `Test/` | Utility-level test assets/scratch validation content |
-| `asset-count-scripts/` | Asset counting/inventory scripts for cloud, git, and Wiz sources |
-| `asset-translator/` | Normalize and transform asset files into Phoenix-ready structures |
-| `client scripts/` | Client-specific translators/automation (for example Q2 and Okta workflows) |
-| `container scan/` | Container scan-related helper scripts/data transformations |
-| `container3rp/` | Third-party container report processing and Phoenix import support |
-| `csv_translator/` | Convert CSV/JSON vulnerability exports and upload to Phoenix |
-| `docs/` | Shared Utils architecture, operations, and development documentation |
-| `logos/` | Branding/media assets for Utils documentation and reporting |
-| `pentest-import/` | Import penetration-test findings from CSV-like sources |
-| `prowler extractor/` | Parse/reshape Prowler output for downstream ingestion/reporting |
-| `report-Team_dashboard_report/` | Team-focused dashboard report generation |
-| `report-asset_and_vulnerability_report/` | Combined asset + vulnerability report generation |
-| `report-dashboard/` | Executive dashboard/report generation (PDF/Excel) |
-| `report-vulnerability_report/` | Vulnerability-centric report generator |
-| `SBOM-SCA-CONTAINER-PIPELINE/` | SBOM/SCA and container scanning pipeline utilities (includes this `sbom-single-repo` tool) |
-| `technology-determination/` | Technology stack detection/classification using NVD/CPE mappings |
-
-## Linked documentation (start here)
-
-- Utils system map: `../../UTILS_SYSTEM_MAP.md`
-- Utils docs router: `../../DOC_INDEX.md`
-- Utility selection guide: `../../UTILS_MASTER_INDEX.md`
-- SCA quick runbook: `./QUICK_START.md`
+See `task-8-report.md`'s "Concerns" section for the full list, including: local pre-flight
+validation is best-effort (not a guarantee of server acceptance, and not guaranteed exhaustive on
+rejection); Azure DevOps field choices were reasoned from documentation, not a live Azure Pipelines
+run; and no live Phoenix instance has ever received a request from this client (the ingest endpoint
+is itself feature-flagged OFF by default server-side, per the design's S2 hard-gate sequencing -
+this client is built against the frozen contract and fixtures, not against a running deployment).
