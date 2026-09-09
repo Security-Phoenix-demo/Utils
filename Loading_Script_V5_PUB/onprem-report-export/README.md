@@ -2,6 +2,8 @@
 
 This folder contains generic helper scripts for exporting reports from on-premise scanner appliances and loading those reports into Phoenix with `Loading_Script_V5_PUB/phoenix_multi_scanner_enhanced.py`.
 
+Expected public path: `Loading_Script_V5_PUB/onprem-report-export`.
+
 Supported sources:
 
 - JFrog X-Ray vulnerability reports.
@@ -22,7 +24,7 @@ The workflow is push-only from the customer's environment:
 | `export_sonatype.sh` | Exports and normalizes one Sonatype Nexus IQ application report to JSON. |
 | `run_all.sh` | Runs export and Phoenix upload for the configured scanner scope. |
 | `lib_phoenix.sh` | Writes the V5 Phoenix config file and invokes `phoenix_multi_scanner_enhanced.py`. |
-| `scanner_field_mappings.yaml` | Optional Sonatype mapping override for Nexus IQ reports normalized by `export_sonatype.sh`. |
+| `scanner_field_mappings.yaml` | **Required.** Field mappings for both exporters. Replaces (does not merge with) the bundled toolkit mapping while `run_all.sh` runs — see note below. |
 
 ## Prerequisites
 
@@ -43,6 +45,11 @@ chmod 600 config.env
 ```
 
 Edit `config.env` and set the scanner URLs, credentials, initial scope, Phoenix API URL, and Phoenix API credentials.
+
+Phoenix API URL examples:
+
+- PoC: `https://api.poc1.appsecphx.io`
+- Production: `https://api.securityphoenix.cloud`
 
 ## Export Reports Only
 
@@ -81,6 +88,23 @@ Recommended scanner tokens:
 - `sonatype`
 
 Use `PHOENIX_IMPORT_TYPE=merge` for repeated scheduled runs.
+
+## How Field Mapping Resolves
+
+`FieldMapper` in `scanner_field_mapper.py` loads `scanner_field_mappings.yaml`
+relative to the **current working directory**. `run_all.sh` does
+`cd "$(dirname "$0")"`, so the copy in this folder is what gets loaded — the
+toolkit's bundled 200-scanner mapping is not read during these runs, and the two
+files are never merged.
+
+That is deliberate: both exporters emit their own normalized JSON shape, and
+pinning the mapping beside them keeps this workflow stable regardless of changes
+to the bundled file. Two rules follow:
+
+- Any scanner loaded from this folder must be defined in this file.
+- Keep `file_patterns` narrow. A bare `*.json` pattern will also match the other
+  exporter's output, and the report will be silently mis-mapped to the wrong
+  scanner and imported with zero findings.
 
 ## Security Notes
 

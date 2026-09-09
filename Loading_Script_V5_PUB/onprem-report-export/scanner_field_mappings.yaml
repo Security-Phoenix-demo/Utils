@@ -1,6 +1,17 @@
-# Optional Sonatype Nexus IQ mapping for reports normalized by export_sonatype.sh.
-# Keep this file available to the Phoenix V5 loading toolkit if the bundled
-# mapping does not include a compatible Sonatype Nexus IQ mapping.
+# Scanner field mappings for reports produced by export_xray.sh and
+# export_sonatype.sh.
+#
+# IMPORTANT: this file is NOT merged with the toolkit's bundled
+# scanner_field_mappings.yaml. FieldMapper (scanner_field_mapper.py) resolves
+# "scanner_field_mappings.yaml" relative to the *current working directory*, and
+# run_all.sh runs from this folder, so this file REPLACES the bundled mapping
+# for the duration of the run. It must therefore define every scanner this
+# folder loads. That is intentional and self-contained: these two exporters emit
+# a normalized shape of their own, and pinning the mapping here keeps the
+# on-prem workflow independent of changes to the 200-scanner bundled file.
+#
+# Consequence: file_patterns must stay narrow. A bare "*.json" here would match
+# the other exporter's output too and silently mis-map it.
 
 phoenix_fields:
   asset_attributes:
@@ -22,7 +33,7 @@ scanners:
   sonatype:
     formats:
       - name: "sonatype_json"
-        file_patterns: ["*.json", "*sonatype*.json"]
+        file_patterns: ["sonatype_*.json", "*sonatype*.json"]
         format_type: "json"
         asset_type: "BUILD"
         detection:
@@ -30,7 +41,11 @@ scanners:
           required_keys: ["components", "matchSummary"]
         field_mappings:
           asset:
-            buildFile: "components[0].packageUrl"
+            # Keyed on the Nexus IQ application (set by export_sonatype.sh), not
+            # on components[0]: that drifts between scans and collides across
+            # applications sharing a first component.
+            buildFile: "applicationId"
+            repository: "applicationId"
             origin: '"sonatype"'
           vulnerability:
             name: "components[].vulnerabilities[].vuln"
@@ -45,3 +60,35 @@ scanners:
           "Medium": "5.0"
           "Low": "2.0"
           "Negligible": "1.0"
+
+  # Matches the flat {total_rows, rows[]} shape emitted by export_xray.sh.
+  jfrog_xray_unified:
+    formats:
+      - name: "jfrog_xray_unified_json"
+        file_patterns: ["xray_vulnerabilities_*.json", "*jfrog_xray*.json"]
+        format_type: "json"
+        asset_type: "BUILD"
+        detection:
+          json_keys: ["total_rows", "rows"]
+          required_keys: ["total_rows", "rows"]
+        field_mappings:
+          asset:
+            # Keyed on the configured export scope (set by export_xray.sh), not
+            # rows[0].package, which changes with whatever finding sorts first.
+            buildFile: "scope"
+            repository: "scope"
+            origin: '"jfrog_xray_unified"'
+          vulnerability:
+            name: "rows[].vuln"
+            description: "rows[].description"
+            remedy: "rows[].fix"
+            severity: "rows[].severity"
+            location: "rows[].package"
+            reference_ids: "rows[].cve"
+        severity_mapping:
+          "Critical": "10.0"
+          "High": "8.0"
+          "Medium": "5.0"
+          "Low": "2.0"
+          "Unknown": "5.0"
+          "Information": "1.0"

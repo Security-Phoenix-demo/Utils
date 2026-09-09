@@ -38,41 +38,79 @@ data_url="$(curl -fsS "${AUTH[@]}" "${BASE}/api/v2/reports/applications/${app_id
 [[ -n "$data_url" ]] || { echo "ERROR: no '$STAGE' report for $APP_PUBLIC_ID" >&2; exit 1; }
 echo "   reportDataUrl: $data_url" >&2
 
+# reportDataUrl is already the raw data path and normally ends in /raw. Only add
+# the suffix when it is genuinely missing, otherwise the request 404s on /raw/raw.
+raw_url="${BASE}/${data_url#/}"
+[[ "$raw_url" == */raw ]] || raw_url="${raw_url%/}/raw"
+
 echo ">> Downloading raw report..." >&2
-curl -fsS "${AUTH[@]}" "${BASE}/${data_url#/}/raw" -o "$OUT_FILE"
+curl -fsS "${AUTH[@]}" "$raw_url" -o "$OUT_FILE"
+
+jq -e 'type == "object"' "$OUT_FILE" >/dev/null \
+  || { echo "ERROR: Nexus IQ did not return a JSON report object ($raw_url)" >&2; exit 1; }
 
 # Nexus IQ raw reports can place issues under
 # components[].securityData.securityIssues[]. The Phoenix V5 Sonatype mapping
 # expects components[].vulnerabilities[], so this preserves the original data
 # and adds the normalized shape.
-jq '
+#
+# NOTE: `$pkg` is bound from the enclosing component before mapping the issue
+# list. Inside `map()` over securityIssues, `.packageUrl` would refer to the
+# issue object (which has no such field), leaving Phoenix's required `location`
+# field empty.
+jq --arg app "$APP_PUBLIC_ID" '
   .matchSummary //= {totalComponentCount: ((.components // []) | length), knownComponentCount: ((.components // []) | length)}
+  # Stable per-application asset identity. Keying the asset on a component (e.g.
+  # components[0].packageUrl) both drifts between scans and collides across
+  # applications that happen to share a first component, merging separate
+  # Nexus IQ applications into one Phoenix asset.
+  | .applicationId = $app
   | .components = ((.components // []) | map(
       if (.vulnerabilities? | type) == "array" then
         .
       else
-        .vulnerabilities = ((.securityData.securityIssues // []) | map({
+        . as $c
+        | ([ $c.packageUrl,
+             $c.componentIdentifier.packageUrl,
+             # npm/pypi/nuget coordinates use packageId/name rather than
+             # groupId/artifactId; without those the fallback collapsed to a
+             # bare version string like "4.17.11".
+             ( ($c.componentIdentifier.coordinates // {})
+               | [ .groupId, .artifactId, .packageId, .name, .version ]
+               | map(select(. != null and . != ""))
+               | if length > 0 then join(":") else null end ),
+             $c.hash,
+             $c.displayName
+           ]
+           | map(select(. != null and . != ""))
+           | (.[0] // "unknown-component")) as $pkg
+        | .vulnerabilities = (($c.securityData.securityIssues // []) | map({
           vuln: (.reference // .id // .threatCategory // "sonatype-issue"),
-          cve: (.reference // ""),
+          cve: (if ((.reference // "") | test("^CVE-")) then .reference else "" end),
           severity: (
             if (.severity | type) == "number" then
-              (if .severity >= 9 then "Critical"
-               elif .severity >= 7 then "High"
-               elif .severity >= 4 then "Medium"
-               elif .severity > 0 then "Low"
-               else "Negligible" end)
+              (.severity | tostring)
             else
               (.severity // "Medium")
             end
           ),
-          package: (.packageUrl // .componentIdentifier.packageUrl // ""),
-          description: (.reference // .id // .threatCategory // "Sonatype security issue"),
-          fix: (.status // .remediation // "Review in Sonatype Nexus IQ")
+          package: $pkg,
+          description: ((.threatCategory // "security") + " issue "
+                        + (.reference // .id // "unknown")
+                        + " in " + $pkg),
+          fix: (.remediation // .status // "Review in Sonatype Nexus IQ")
         }))
       end
     ))
-' "$OUT_FILE" >"${OUT_FILE}.normalized" && mv "${OUT_FILE}.normalized" "$OUT_FILE"
+' "$OUT_FILE" >"${OUT_FILE}.normalized"
+# Deliberately not `jq ... && mv`: an && list is exempt from set -e, so a failed
+# normalization would skip the mv and still exit 0, uploading the raw report.
+mv "${OUT_FILE}.normalized" "$OUT_FILE"
 
-comps="$(jq -r '(.components | length) // "?"' "$OUT_FILE" 2>/dev/null || echo '?')"
-echo ">> Wrote report ($comps components) -> $OUT_FILE" >&2
+comps="$(jq -r '(.components | length) // 0' "$OUT_FILE")"
+vulns="$(jq -r '[.components[]?.vulnerabilities[]?] | length' "$OUT_FILE")"
+if [[ "$vulns" == "0" ]]; then
+  echo "   WARNING: report contains no security issues - nothing will be imported." >&2
+fi
+echo ">> Wrote report ($comps components, $vulns findings) -> $OUT_FILE" >&2
 echo "$OUT_FILE"
